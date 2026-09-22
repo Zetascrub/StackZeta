@@ -44,6 +44,11 @@ IMAGES_DIR = Path(os.environ.get("IMAGES_DIR", "/data/images"))
 IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 MAX_STORED_IMAGES = 50
 
+PIPER_URL = os.environ.get("PIPER_URL", "http://piper-tts:5000/synthesize")
+AUDIO_DIR = Path(os.environ.get("AUDIO_DIR", "/data/audio"))
+AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+MAX_STORED_AUDIO = 50
+
 
 class DeviceHub:
     """Tracks the single connected StackChan (v0.1: one device)."""
@@ -141,6 +146,92 @@ async def images_handler(request: web.Request) -> web.StreamResponse:
     return web.FileResponse(path)
 
 
+def _prune_old_audio() -> None:
+    files = sorted(AUDIO_DIR.glob("*.wav"), key=lambda p: p.stat().st_mtime)
+    while len(files) > MAX_STORED_AUDIO:
+        oldest = files.pop(0)
+        try:
+            oldest.unlink()
+        except OSError:
+            pass
+
+
+# Device output codec: mono, 16-bit, 24kHz (see
+# firmware/main/hal/board/config.h AUDIO_OUTPUT_SAMPLE_RATE). Notification
+# audio used to go through the firmware's Ogg/Opus playback pipeline
+# (Application::PlaySound(), same path as the built-in chimes), but that
+# vendored decoder reliably corrupted the heap on this dynamically
+# synthesized speech (reproduced repeatedly during testing — see notify
+# client history). The firmware now parses this WAV directly and writes the
+# PCM straight to the codec, bypassing that decoder entirely, so we
+# transcode to exactly the format it expects instead.
+NOTIFICATION_AUDIO_SAMPLE_RATE = 24000
+
+
+async def synthesize_notification_audio(text: str) -> str | None:
+    """Synthesizes `text` via Piper, then resamples to mono/16-bit/24kHz PCM
+    WAV for the firmware to play directly."""
+    if not text.strip():
+        return None
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                PIPER_URL, json={"text": text}, timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                resp.raise_for_status()
+                wav_bytes = await resp.read()
+    except Exception:
+        log.exception("failed to synthesize notification audio")
+        return None
+
+    token = uuid.uuid4().hex
+    raw_path = AUDIO_DIR / f"{token}.raw.wav"
+    out_path = AUDIO_DIR / f"{token}.wav"
+    raw_path.write_bytes(wav_bytes)
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(raw_path),
+            "-ac",
+            "1",
+            "-ar",
+            str(NOTIFICATION_AUDIO_SAMPLE_RATE),
+            "-c:a",
+            "pcm_s16le",
+            str(out_path),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        returncode = await proc.wait()
+    except Exception:
+        log.exception("ffmpeg resample failed")
+        returncode = -1
+    finally:
+        raw_path.unlink(missing_ok=True)
+
+    if returncode != 0 or not out_path.is_file():
+        log.error("ffmpeg produced no output for notification audio (rc=%s)", returncode)
+        out_path.unlink(missing_ok=True)
+        return None
+
+    _prune_old_audio()
+    return out_path.name
+
+
+async def audio_handler(request: web.Request) -> web.StreamResponse:
+    filename = request.match_info["filename"]
+    if "/" in filename or ".." in filename:
+        raise web.HTTPBadRequest()
+    path = AUDIO_DIR / filename
+    if not path.is_file():
+        raise web.HTTPNotFound()
+    return web.FileResponse(path)
+
+
 async def health_handler(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok", "device_connected": hub.ws is not None})
 
@@ -159,6 +250,13 @@ async def handle_mqtt_notification(payload: dict) -> None:
             filename = await fetch_and_prepare_image(str(image_url))
             if filename:
                 message["image_url"] = f"{PUBLIC_BASE_URL}/images/{filename}"
+
+        speak = payload.get("speak", True)
+        if speak:
+            announce_text = " ".join(p for p in (message["title"], message["body"]) if p)
+            audio_filename = await synthesize_notification_audio(announce_text)
+            if audio_filename:
+                message["audio_url"] = f"{PUBLIC_BASE_URL}/audio/{audio_filename}"
 
         await hub.send(message)
     except Exception:
@@ -206,6 +304,7 @@ async def main() -> None:
     app = web.Application()
     app.router.add_get("/ws", ws_handler)
     app.router.add_get("/images/{filename}", images_handler)
+    app.router.add_get("/audio/{filename}", audio_handler)
     app.router.add_get("/health", health_handler)
 
     runner = web.AppRunner(app)

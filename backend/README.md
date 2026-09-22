@@ -24,9 +24,65 @@ Self-hosted voice-assistant backend for the StackChan, running on this machine v
   voice channel above, so it works independently of whatever the voice conversation is doing. If an
   `image_url` is given, the bridge fetches it, resizes it to fit the 320×240 screen, and serves it
   back over plain HTTP for the device to fetch and decode itself (auto-attaches the HA bearer token
-  when the URL points back at `HA_BASE_URL`, so an HA camera-snapshot URL just works). The device
-  itself decides when it's safe to actually show a queued notification (not mid-conversation) —
-  see `firmware/main/stackchan/notify/notify_client.cpp`.
+  when the URL points back at `HA_BASE_URL`, so an HA camera-snapshot URL just works). Unless the
+  payload sets `"speak": false`, it also calls Piper directly (the same instance
+  `xiaozhi-esp32-server` uses) to synthesize the title/body, resamples that via `ffmpeg` to
+  mono/16-bit/24kHz PCM WAV (the device's codec's native format — see "Notification audio" below),
+  and serves that alongside the image too. The device itself decides when it's safe to actually
+  show/speak a queued notification (not mid-conversation) — see
+  `firmware/main/stackchan/notify/notify_client.cpp`.
+
+## Triggering notifications from Home Assistant
+
+Any HA automation can trigger one by publishing a JSON payload to the MQTT topic in `.env`
+(`MQTT_TOPIC`, default `stackchan/notify`) on your existing Mosquitto broker. Fields: `title`
+and/or `body` (plain text, both optional but at least one should be set), an optional `image_url`,
+and an optional `speak` (boolean, default `true` — set `false` to show it silently instead of
+having it spoken aloud).
+
+**Text-only**, e.g. on a door sensor:
+
+```yaml
+alias: Notify StackChan — front door opened
+trigger:
+  - platform: state
+    entity_id: binary_sensor.front_door
+    to: "on"
+action:
+  - service: mqtt.publish
+    data:
+      topic: stackchan/notify
+      payload: >-
+        {"title": "Front Door", "body": "Someone just opened the front door"}
+```
+
+**With an image**, e.g. a camera snapshot — HA's `entity_picture` attribute is a relative path, so
+prefix it with your HA base URL (the bridge auto-attaches your HA token for any `image_url` under
+that base, so an authenticated camera-proxy URL just works without extra setup):
+
+```yaml
+alias: Notify StackChan — front door camera
+trigger:
+  - platform: state
+    entity_id: binary_sensor.front_door
+    to: "on"
+action:
+  - service: mqtt.publish
+    data:
+      topic: stackchan/notify
+      payload: >-
+        {"title": "Front Door", "body": "Motion detected",
+         "image_url": "http://192.168.8.135:8123{{ state_attr('camera.front_door', 'entity_picture') }}"}
+```
+
+Both examples use YAML mode (Settings → Automations → ⋮ → Edit in YAML), since the templated
+payload is easier to write correctly there than in the visual editor — the visual editor's
+"Call a service" action works too, just paste the same `mqtt.publish` data into its fields.
+
+To test manually without waiting for a trigger: Developer Tools → Actions → search
+`mqtt.publish`, paste the same `data:` block, and run it — the robot should speak the
+title/body and show the image within a couple of seconds, or queue silently until any active
+conversation finishes (see "Idle sleep" below for what happens if the screen is currently off).
 
 ## Setup
 
@@ -55,6 +111,109 @@ very first reply after wake-word uses the raw persona text verbatim with no lang
 was in Chinese even though the LLM itself is fully capable of English). Both are overridden in
 `.config.yaml`: an English "Zeta" persona under `prompt:`, and `TTS.PiperTTS.language: en_us`.
 
+## Notification audio (firmware)
+
+Notification audio used to go through the firmware's built-in `Application::PlaySound()` (the
+same Ogg/Opus decode pipeline the built-in chimes use), but that vendored decoder reliably
+corrupted the heap and rebooted the device when fed this dynamically-synthesized speech —
+reproduced repeatedly in testing (see git history on `stackchan/notify/notify_client.cpp` for the
+investigation), independent of timing relative to a conversation. The device now bypasses that
+decoder entirely for notification audio: the notify-bridge resamples Piper's WAV output to exactly
+mono/16-bit/24kHz PCM (the codec's own native output format —
+`firmware/main/hal/board/config.h`'s `AUDIO_OUTPUT_SAMPLE_RATE`), and the device parses that WAV
+itself and writes the PCM straight to the codec (`AudioCodec::OutputData()`), never touching the
+Ogg/Opus path. This is only safe when the normal voice pipeline isn't also using the codec —
+`isDeviceBusy()` already rules out an active conversation, and the device additionally waits for
+the voice pipeline's own playback queue to drain first, in case one just finished.
+
+## Conversation motion (firmware)
+
+Small, slow head movements (a nod or slight turn, every couple of seconds) during active
+listening/speaking — not the LLM-driven deliberate gestures (`set_head_angles`), an ambient "it's
+alive" animation. Speaking motion already existed in the upstream codebase
+(`stackchan/modifiers/speaking.h`'s `SpeakingModifier`) but shipped with it disabled; listening
+motion is new (`stackchan/modifiers/listening.h`), modeled on the same tuning. Both needed one
+non-obvious fix: the natural gate for "don't start a new move while one's still in flight" is
+`Motion::isMoving()`, which reads the feedback servo's own hardware "moving" status bit — but for
+these small, slow moves that bit was observed staying stuck `true` long after the move had
+visibly finished (a servo-feedback quirk, not a real ongoing move), silently blocking every tick
+after the first. Both modifiers gate on a fixed cooldown since their own last commanded move
+instead.
+
+## Weather
+
+There's no dedicated weather tool — the upstream `get_weather` plugin scrapes a Chinese-language
+weather webpage, defaults to Guangzhou when it can't resolve a location, and hands the LLM a
+Chinese-language report to translate on the fly, which was unreliable enough (and against the
+"avoid Chinese services" goal) to just turn off. Instead, weather comes from Home Assistant's own
+`homeassistant__GetLiveContext` tool (already available via the MCP connection) reading whatever
+weather entity you have configured in HA — confirmed working with a PirateWeather entity. Two
+things needed to be true for this to work: the entity exposed to HA's Assist feature (Settings →
+Voice assistants → Expose), and the persona prompt explicitly told to use that tool for weather
+questions (an LLM won't necessarily infer that a generic "read house state" tool answers a weather
+question without being told — see the `prompt:` block in `.config.yaml`).
+
+## Persistent memory
+
+`Memory: mem_local_short` (in `.config.yaml`) summarizes each conversation using the same
+`OpenAILLM` already configured (no `llm:` override needed under `Memory:` — it falls back to the
+main LLM) and keeps the summaries on this server only. Chosen specifically over cloud options like
+`mem0ai`, which the project's own config comments recommend against for privacy-focused
+deployments — this keeps conversation history from ever leaving the LAN, matching the same
+LAN/OpenAI-only boundary as everything else in this stack.
+
+## Proximity wake (firmware)
+
+An LTR-553ALS-WA proximity sensor (I2C, address `0x23`) triggers a full wake — same as saying the
+wake word — when a hand approaches within roughly arm's length, without needing a hardware driver
+that existed anywhere in the upstream codebase already (unlike touch/IMU/RTC, all of which had one
+to model this on). New files: `firmware/main/hal/drivers/LTR553/` (the driver itself,
+register map from the official datasheet) and `firmware/main/stackchan/proximity/proximity_wake.h`
+(a dedicated FreeRTOS task, calls `Application::WakeWordInvoke("proximity")` on the idle→near
+transition). Runs on its own task rather than the shared UI/update loop, matching the established
+pattern in this codebase for any polling/I2C work that could block. Calibrated against real
+hardware: baseline (nothing nearby) sits stable around 40-49, climbing to 200+ as a hand
+approaches — threshold of 200 confirmed triggering a real wake (screen, servos, wake sound) on
+first attempt, with hysteresis (re-arms only below 120) to avoid chattering right at the edge.
+
+## Do Not Disturb
+
+`self.notifications.set_do_not_disturb` / `get_do_not_disturb` — new MCP tools
+(`firmware/main/hal/hal_mcp.cpp`) so a spoken command ("turn on do not disturb") can toggle
+whether incoming HA-triggered notifications get shown/spoken at all. While enabled, notifications
+are silently dropped (logged, not queued for later) rather than held back and shown once free —
+deliberately not persisted across reboots, since a DND that's stuck on and survives a power cycle
+silently seemed like a worse footgun than just having to say it again. State lives in
+`NotifyClient` (`firmware/main/stackchan/notify/notify_client.cpp`), a plain atomic flag checked in
+`drainIncoming()` before a notification is even queued.
+
+## Removing Chinese output (backend)
+
+Beyond the persona/language overrides above, several more sources of hardcoded Chinese text were
+found and neutralized — none of them go through the LLM's own (English-instructed) response
+generation, so the persona fix alone didn't catch them:
+
+- **`end_prompt`** — a scripted farewell spoken verbatim when a session times out. Disabled
+  (`end_prompt.enable: false`) rather than translated — see the comment in `.config.yaml`.
+- **`handle_exit_intent`** — the plugin's tool description and fallback farewell were Chinese;
+  overridden with an English version, mounted over the built-in file (see
+  `xiaozhi-server/overrides/README.md`).
+- **`play_music`** — several more hardcoded Chinese strings, and expects a local music library we
+  don't have. Replaced with an English stub, same mounting mechanism.
+- **`change_role`** — can switch the entire system prompt to one of three hardcoded Chinese
+  personas.
+- **`get_weather`** — see "Weather" above.
+- **`web_search`** — no API key configured (would need a Tavily account), and without one it
+  returns a hardcoded Chinese error message when called.
+- **`get_news_from_newsnow`** — defaults to Chinese news sources (English ones like Hacker
+  News/GitHub Trending exist in its channel list but aren't the default).
+
+The last four are simply left out of `Intent.function_call.functions` in `.config.yaml` (currently
+empty) rather than patched — none were things we actually needed, and disabling was the lower-risk
+fix. Re-enable individually if you want one badly enough to fix its Chinese-language issues
+properly (`web_search` just needs a Tavily key; `get_news_from_newsnow` needs its default sources
+changed to English ones).
+
 ## Idle sleep (firmware)
 
 When the device goes idle (waiting for the wake word), it homes both servos, stops the stock
@@ -66,6 +225,24 @@ into the existing `SetStatus()` idle/listening transitions) — see
 side. The screen-off step is debounced by 2s: the `idle` status fires briefly and transiently
 during the wake-word handshake itself (before the real `listening` status follows), and without
 the debounce that blip alone was enough to flash the screen off and immediately back on.
+
+Showing a notification wakes the screen directly (not via the normal conversation state machine),
+so nothing would otherwise put it back to sleep afterward if the device stayed idle — the
+`STANDBY` transition that normally triggers `EnterIdleSleep()` only fires on real conversation
+state changes, and a notification isn't one. `notify_client.cpp`'s `maybeResleep()` puts it back
+to sleep itself, ~10s after showing, if the device is still idle by then.
+
+## Audio-reactive mouth (firmware)
+
+The mouth's openness during speech is driven by the actual live speaker output level, not the
+stock random open/close alternation. `CoreS3AudioCodec::Write()`
+(`firmware/main/hal/board/cores3_audio_codec.cc`) — already a StackChan-owned override, not
+dependency code — computes the peak sample magnitude of each chunk actually sent to the speaker
+and stores it in a small shared atomic (`firmware/main/hal/board/audio_level.h`).
+`SpeakingModifier::animate_mouth()` (`stackchan/modifiers/speaking.h`) polls that value, smooths it
+slightly, and maps it to mouth weight — real (if simple) lip-sync. Confirmed working with live
+data: levels swinging from near-zero (silence) up to ~30000 (loud words) in step with actual
+speech, weight correctly tracking 0-100 accordingly.
 
 ## Idle timeout
 
@@ -80,8 +257,53 @@ second — visible on the firmware side as the screen flashing on then straight 
 breaking that window. If a shorter session tail matters more than a snappier wake, revisit this —
 but changing it again means retesting the wake-to-first-word timing, not just the tail end.
 
-## Known rough edges (v0.1)
+## Privacy / network audit (v0.2)
 
+The explicit goal, stated directly: this device should never talk to anything except OpenAI (the
+one approved external service) and this LAN — nothing else, especially not Chinese cloud
+endpoints. A full sweep of both the firmware and this backend found several things that violated
+that, beyond the plugin-level Chinese-output fixes already covered above. All fixed as of v0.2:
+
+- **A live outbound call to a Chinese IP-geolocation service, on every single conversation** —
+  `core/utils/util.py`'s `get_ip_info()` was posting the client's IP to
+  `https://whois.pconline.com.cn/ipJson.jsp` unconditionally, wired in via
+  `agent-base-prompt.txt`'s `{{local_address}}`/`{{weather_info}}` template variables
+  (`core/utils/prompt_manager.py`) — a mechanism completely separate from the `get_weather`
+  *plugin* already disabled above via the empty functions list. Disabling that plugin turned out
+  to be necessary but not sufficient: this was a second, independent path to the same kind of
+  data leaving the LAN, firing on every conversation rather than only when a weather question was
+  actually asked, and it was missed in the first pass specifically because it isn't a plugin or a
+  `selected_module` — it's core connection-setup logic. See `xiaozhi-server/overrides/README.md`
+  and `patch_chinese_strings.py` for the fix and the rest of what that patch covers (a further ~20
+  hardcoded Chinese strings across core files that get spoken via TTS or injected into the LLM's
+  own conversation context, e.g. a tool-call-timeout message and the few-shot examples that teach
+  the model the tool-calling pattern).
+- **Vision/camera defaults to a Chinese cloud AI, and it's actually wired up** — the `VLLM`
+  (vision) module was never configured, so it silently fell back to upstream's default
+  (`ChatGLMVLLM` → `open.bigmodel.cn`, Zhipu AI). The firmware's camera `Explain()` feature
+  (triggered by the device's own `self.camera.take_photo` MCP tool, which the LLM can call anytime
+  — it isn't gated by `Intent.function_call.functions` the way server-side plugins are) genuinely
+  posts captured photos there. Fixed by adding `VLLM.OpenAIVLLM` to `.config.yaml`, routed through
+  OpenAI like the LLM. The provider code itself also hardcoded `"(请使用中文回复)"`
+  ("please reply in Chinese") onto every vision question regardless of persona/language config —
+  see `xiaozhi-server/overrides/vllm_openai.py`.
+- **Firmware-side findings** (see `upstream/StackChan/firmware`, not this directory): a hardcoded
+  Chinese NTP server (`cn.pool.ntp.org`, alongside `pool.ntp.org`/`time.google.com`) queried on
+  every boot with no Kconfig override possible — narrowed to `pool.ntp.org` only
+  (`main/hal/hal_network.cpp`). Four M5Stack-cloud-only apps/menus (Avatar/video-call, App Center,
+  EzData, and the Setup app's Account/unbind menu) removed from the launcher entirely
+  (`main/main.cpp`, `main/apps/app_setup/app_setup.cpp`) rather than just neutered — they only
+  talked to M5Stack's own servers (`api.tenclass.net`, `47.113.125.164:12800`,
+  `ezdata2.m5stack.com`), had nothing to do with this project's self-hosted backend, and App
+  Center specifically could install a firmware update from that cloud. `CONFIG_STACKCHAN_SERVER_URL`
+  also overridden to an inert value in `sdkconfig.defaults` as defense-in-depth, though nothing can
+  reach it anymore regardless.
+
+Camera vision itself (separately from where it points) exposed a pre-existing firmware hang once
+the VLLM fix made it reachable: `StackChanCamera::Explain()` could wait indefinitely for a slow or
+stalled response, stopping voice interaction until power-cycled. The firmware now applies a
+20-second HTTP timeout and reads the response incrementally, returning a tool error instead of
+wedging the device. This still needs a live slow-response/failure-path test on hardware.
 - FunASR (local ASR) occasionally mishears place names / low-frequency words in English speech —
   not blocking, but worth watching. `sherpa_onnx_local` is a lighter alternative if this becomes a
   problem.
@@ -90,9 +312,8 @@ but changing it again means retesting the wake-to-first-word timing, not just th
   can set from the backend. Until it's on, the device boots to the app launcher instead of straight
   into the assistant.
 
-## Deferred to v0.2
+## Deferred
 
-- Natural head motion *during* active conversation (distinct from the idle-sleep behavior below,
-  which only affects the fully-idle state) — currently the head only moves when the LLM explicitly
-  calls the `set_head_angles` tool as a deliberate gesture, there's no continuous "alive" motion
-  while listening/speaking.
+- Local LLM option — OpenAI is the only backend wired up so far.
+- Notification priority (an "urgent" flag that interrupts an active conversation instead of
+  queuing behind it).

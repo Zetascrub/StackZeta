@@ -36,7 +36,43 @@ selected_module:
   ASR: FunASR
   TTS: PiperTTS
   LLM: OpenAILLM
+  # Unset upstream, this defaults to ChatGLMVLLM (Zhipu AI's cloud API,
+  # open.bigmodel.cn — China) with a placeholder key. The firmware's camera
+  # Explain() feature is wired up and would actually post captured photos
+  # there before failing on the placeholder key, so the image leaves the LAN
+  # regardless of whether the call ultimately succeeds. Routed through
+  # OpenAI instead, matching the LLM.
+  VLLM: OpenAIVLLM
   Intent: function_call
+  # mem_local_short: conversations are summarized (using our existing
+  # OpenAILLM, since no llm: override is given below) and kept on this
+  # server only — the project's own config comments recommend this option
+  # specifically for privacy-focused deployments, over cloud options like
+  # mem0ai.
+  Memory: mem_local_short
+
+Intent:
+  function_call:
+    type: function_call
+    functions: []
+      # All of the optional default functions turned out to be unsuitable
+      # for this deployment and are deliberately left disabled:
+      # - get_weather: scrapes a Chinese-language weather webpage, defaults
+      #   to Guangzhou, and hands the LLM a Chinese-language report to
+      #   translate on the fly. Weather now comes from Home Assistant's own
+      #   GetLiveContext (via the MCP connection) instead, if a weather
+      #   entity is exposed to HA's Assist feature.
+      # - web_search: no API key configured (would need a Tavily account),
+      #   and without one it returns a hardcoded Chinese error message when
+      #   called — a Chinese leak on top of being non-functional.
+      # - get_news_from_newsnow: defaults to Chinese news sources (English
+      #   ones like Hacker News/GitHub Trending exist in the channel list
+      #   but aren't the default).
+      # - change_role: can switch the whole system prompt to one of three
+      #   hardcoded Chinese personas.
+      # handle_exit_intent and play_music aren't listed here either (they
+      # load by default regardless) but are neutralized via file overrides
+      # instead — see xiaozhi-server/overrides/README.md.
 
 TTS:
   PiperTTS:
@@ -64,11 +100,23 @@ prompt: |
   check your status, and set reminders. Use tools when the user's request
   clearly calls for one; otherwise just answer directly.
 
+  There is no dedicated weather tool. For weather questions, call
+  homeassistant__GetLiveContext to read the current state of the house,
+  including any weather entity, and answer from that — don't say you can't
+  check the weather without having tried this first.
+
   Never mention that you are an AI language model, and never apologise for
   being a robot. If you don't know something, say so plainly and briefly.
 
 LLM:
   OpenAILLM:
+    type: openai
+    model_name: gpt-4o-mini
+    url: https://api.openai.com/v1
+    api_key: YOUR_OPENAI_API_KEY
+
+VLLM:
+  OpenAIVLLM:
     type: openai
     model_name: gpt-4o-mini
     url: https://api.openai.com/v1

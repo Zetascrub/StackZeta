@@ -13,6 +13,16 @@ services:
     volumes:
       - ./xiaozhi-server/data:/opt/xiaozhi-esp32-server/data
       - ./xiaozhi-server/models/SenseVoiceSmall/model.pt:/opt/xiaozhi-esp32-server/models/SenseVoiceSmall/model.pt
+      # English overrides for built-in plugins that had hardcoded Chinese
+      # response text (see backend/xiaozhi-server/overrides/README.md).
+      - ./xiaozhi-server/overrides/handle_exit_intent.py:/opt/xiaozhi-esp32-server/plugins_func/functions/handle_exit_intent.py
+      - ./xiaozhi-server/overrides/play_music.py:/opt/xiaozhi-esp32-server/plugins_func/functions/play_music.py
+      - ./xiaozhi-server/overrides/vllm_openai.py:/opt/xiaozhi-esp32-server/core/providers/vllm/openai.py
+      # Startup patch for hardcoded Chinese strings/calls in core files too
+      # large/central to mirror as whole-file overrides — see
+      # overrides/patch_chinese_strings.py and overrides/README.md.
+      - ./xiaozhi-server/overrides/patch_chinese_strings.py:/opt/patch_chinese_strings.py
+    command: sh -c "python /opt/patch_chinese_strings.py && python app.py"
     depends_on:
       - piper-tts
 
