@@ -1,0 +1,41 @@
+services:
+  xiaozhi-esp32-server:
+    image: ghcr.io/xinnan-tech/xiaozhi-esp32-server:server_latest
+    container_name: xiaozhi-esp32-server
+    restart: unless-stopped
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      - TZ=Europe/London
+    ports:
+      - "8000:8000" # websocket (voice)
+      - "8003:8003" # OTA + vision endpoints
+    volumes:
+      - ./xiaozhi-server/data:/opt/xiaozhi-esp32-server/data
+      - ./xiaozhi-server/models/SenseVoiceSmall/model.pt:/opt/xiaozhi-esp32-server/models/SenseVoiceSmall/model.pt
+    depends_on:
+      - piper-tts
+
+  piper-tts:
+    build: ./piper-tts
+    container_name: piper-tts
+    restart: unless-stopped
+    volumes:
+      - piper-voices:/data
+    # Not published to the host on purpose — only xiaozhi-esp32-server talks to it,
+    # over the compose network at http://piper-tts:5000.
+
+  notify-bridge:
+    build: ./notify-bridge
+    container_name: notify-bridge
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8090:8090" # device connects here for notifications (separate from the voice WS)
+    volumes:
+      - notify-images:/data/images
+
+volumes:
+  piper-voices:
+  notify-images:

@@ -1,0 +1,14 @@
+# Firmware flash dumps (large binaries, keep on disk, keep out of git history)
+backups/*.bin
+
+# upstream/StackChan is its own git clone (has its own .git/) — not tracked as part of
+# this repo's history. Fork it separately once the customization plan is settled.
+upstream/
+
+# Backend secrets and large model/voice files — never commit these.
+backend/xiaozhi-server/data/.config.yaml
+backend/xiaozhi-server/data/.mcp_server_settings.json
+backend/xiaozhi-server/models/SenseVoiceSmall/model.pt
+backend/.env
+
+.DS_Store

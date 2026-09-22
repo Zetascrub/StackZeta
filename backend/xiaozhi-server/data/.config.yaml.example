@@ -1,0 +1,75 @@
+# Overlay config for xiaozhi-esp32-server. Only keys that differ from the
+# project's own defaults (main/xiaozhi-server/config.yaml upstream) need to
+# appear here — anything omitted falls back to those defaults.
+#
+# Copy this file to `.config.yaml` (gitignored) and fill in the real values.
+# `.config.yaml` must never be committed — it holds the OpenAI API key.
+
+server:
+  # LAN IP of the machine running this Docker stack (not 127.0.0.1 — the
+  # device on WiFi needs to reach this address directly).
+  websocket: ws://192.168.8.10:8000/xiaozhi/v1/
+  vision_explain: http://192.168.8.10:8003/mcp/vision/explain
+
+# Actual idle-timeout is this + a fixed 60s grace period the server adds in
+# its own code. Pushing this all the way to 0 turned out to also cut off the
+# "waiting for you to actually start talking" window right after wake-word
+# (listening state was reverting to idle in well under a second) — 15 keeps
+# that window sane while still landing well under the original 120 default.
+close_connection_no_voice_time: 15
+
+# The upstream defaults for both of these are Chinese-language strings —
+# override so nothing ever gets spoken in a language we haven't configured.
+system_error_response: "Sorry, I'm having some trouble right now. Let's try again in a moment."
+end_prompt:
+  # Disabled rather than translated: a scripted goodbye speech firing out of
+  # a long silence felt like a jarring, pointless interruption. Disconnect
+  # quietly instead — the wake word starts a fresh session either way.
+  enable: false
+
+exit_commands:
+  - "exit"
+  - "goodbye"
+  - "stop listening"
+
+selected_module:
+  ASR: FunASR
+  TTS: PiperTTS
+  LLM: OpenAILLM
+  Intent: function_call
+
+TTS:
+  PiperTTS:
+    type: custom
+    method: POST
+    url: "http://piper-tts:5000/synthesize"
+    format: wav
+    language: en_us
+    params:
+      text: "{prompt_text}"
+
+# Overrides the project's default (Chinese) persona. This is used verbatim as
+# the "quick prompt" for the very first reply after wake-word, and wrapped
+# with language/emoji/tool instructions (see agent-base-prompt.txt upstream)
+# for every reply after that — so it needs to already read naturally in
+# English on its own.
+prompt: |
+  You are Zeta, the voice and personality of a small desktop robot called
+  StackChan, running on someone's home network. You are warm, direct, and a
+  little playful, but you never ramble — you're speaking out loud through a
+  speaker, not writing text, so keep replies short and conversational.
+
+  You can see and control the smart home devices in this house, and you have
+  a few tools of your own: you can move your head, change your LED colour,
+  check your status, and set reminders. Use tools when the user's request
+  clearly calls for one; otherwise just answer directly.
+
+  Never mention that you are an AI language model, and never apologise for
+  being a robot. If you don't know something, say so plainly and briefly.
+
+LLM:
+  OpenAILLM:
+    type: openai
+    model_name: gpt-4o-mini
+    url: https://api.openai.com/v1
+    api_key: YOUR_OPENAI_API_KEY
