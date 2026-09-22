@@ -19,6 +19,8 @@ A privacy-conscious voice assistant, confirmed working end to end:
   dynamically-synthesized speech (see `backend/README.md`'s "Notification audio" section).
 - **Urgent notification priority** — an `urgent` MQTT flag moves an alert to the front of the
   device queue and safely interrupts an active listening or speaking session.
+- **Zeta visual identity** — mascot boot artwork, a mascot launcher portrait, and a dark
+  cyan/amber UI palette carried through the face, speech bubbles, status bar, and home indicator.
 - **Do Not Disturb** — a spoken command toggles whether notifications get shown/spoken at all,
   without needing to touch Home Assistant.
 - **Chatbot with expressions** — English persona, emoji-driven face expressions, wake-word or
