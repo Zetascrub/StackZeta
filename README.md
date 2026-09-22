@@ -2,7 +2,7 @@
 
 Custom firmware + self-hosted backend for an M5Stack StackChan desktop robot.
 
-## Status: v0.2 complete
+## Status: v0.3 in development
 
 A privacy-conscious voice assistant, confirmed working end to end:
 
@@ -17,6 +17,8 @@ A privacy-conscious voice assistant, confirmed working end to end:
   speaker codec by the firmware itself, bypassing the voice pipeline's Ogg/Opus decoder entirely —
   that decoder reliably corrupted the heap and rebooted the device on this kind of
   dynamically-synthesized speech (see `backend/README.md`'s "Notification audio" section).
+- **Urgent notification priority** — an `urgent` MQTT flag moves an alert to the front of the
+  device queue and safely interrupts an active listening or speaking session.
 - **Do Not Disturb** — a spoken command toggles whether notifications get shown/spoken at all,
   without needing to touch Home Assistant.
 - **Chatbot with expressions** — English persona, emoji-driven face expressions, wake-word or
@@ -103,5 +105,3 @@ The community project [BrettKinny/dotty-stackchan](https://github.com/BrettKinny
 ## Deferred
 
 - Local LLM option (OpenAI is the only backend wired up so far).
-- Notification priority (an "urgent" flag that interrupts an active conversation instead of
-  queuing behind it).

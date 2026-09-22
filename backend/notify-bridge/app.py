@@ -243,6 +243,9 @@ async def handle_mqtt_notification(payload: dict) -> None:
             "type": "notification",
             "title": str(payload.get("title", "")),
             "body": str(payload.get("body", "")),
+            # Strict boolean on purpose: a quoted string such as "false"
+            # must not accidentally become an interrupting notification.
+            "urgent": payload.get("urgent") is True,
         }
 
         image_url = payload.get("image_url")

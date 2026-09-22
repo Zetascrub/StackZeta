@@ -20,7 +20,7 @@ Self-hosted voice-assistant backend for the StackChan, running on this machine v
   custom integration code — confirmed working (lights on/off by area and by name).
 - **notify-bridge** — a small custom Python/aiohttp service. Subscribes to HA's existing Mosquitto
   broker (topic `stackchan/notify`, see `.env`), and relays JSON payloads (`title`, `body`, optional
-  `image_url`) to the device over its own dedicated WebSocket at `:8090/ws` — separate from the
+  `image_url`, `urgent`) to the device over its own dedicated WebSocket at `:8090/ws` — separate from the
   voice channel above, so it works independently of whatever the voice conversation is doing. If an
   `image_url` is given, the bridge fetches it, resizes it to fit the 320×240 screen, and serves it
   back over plain HTTP for the device to fetch and decode itself (auto-attaches the HA bearer token
@@ -37,8 +37,9 @@ Self-hosted voice-assistant backend for the StackChan, running on this machine v
 Any HA automation can trigger one by publishing a JSON payload to the MQTT topic in `.env`
 (`MQTT_TOPIC`, default `stackchan/notify`) on your existing Mosquitto broker. Fields: `title`
 and/or `body` (plain text, both optional but at least one should be set), an optional `image_url`,
-and an optional `speak` (boolean, default `true` — set `false` to show it silently instead of
-having it spoken aloud).
+and optional `speak` and `urgent` booleans. `speak` defaults to `true`; set it to `false` to show
+the notification silently. `urgent` defaults to `false`; when `true`, the notification moves to
+the front of the device queue and interrupts an active listening or speaking session.
 
 **Text-only**, e.g. on a door sensor:
 
@@ -83,6 +84,9 @@ To test manually without waiting for a trigger: Developer Tools → Actions → 
 `mqtt.publish`, paste the same `data:` block, and run it — the robot should speak the
 title/body and show the image within a couple of seconds, or queue silently until any active
 conversation finishes (see "Idle sleep" below for what happens if the screen is currently off).
+
+For a time-critical alert, add `"urgent": true` to either payload. Use this sparingly: it ends the
+current voice turn and discards any buffered assistant speech before announcing the alert.
 
 ## Setup
 
@@ -315,5 +319,3 @@ wedging the device. This still needs a live slow-response/failure-path test on h
 ## Deferred
 
 - Local LLM option — OpenAI is the only backend wired up so far.
-- Notification priority (an "urgent" flag that interrupts an active conversation instead of
-  queuing behind it).
