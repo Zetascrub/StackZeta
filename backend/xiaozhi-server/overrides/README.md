@@ -67,3 +67,12 @@ would otherwise feed never triggers either) rather than pointed at a replacement
 If the patch script's startup log ever shows `[patch] SKIP ... pattern not found`, upstream changed
 that file and the corresponding entry in `PATCHES` needs updating to match — the container still
 starts either way (skip, not fail), just with that one string reverted to its original Chinese.
+
+## Privacy enforcement (not a plugin override)
+
+- **`stackzeta_privacy.py`** — mounted as `core/utils/stackzeta_privacy.py`. Reads `privacy_mode`
+  from the control panel's `config.json` (the `stackzeta-state` volume, read-only) and closes voice
+  connections / drops device audio while it is on.
+- **`patch_privacy.py`** — startup patch that wires it into `core/connection.py` (new connections,
+  audio frames, a per-connection watcher) and the `listen` message handler. Fails closed: exits
+  non-zero, so the container does not start, if any pattern stops matching.

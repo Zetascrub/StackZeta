@@ -2,7 +2,7 @@
 
 Custom firmware + self-hosted backend for an M5Stack StackChan desktop robot.
 
-## Status: v0.3 in development
+## Status: v0.4 — privacy release
 
 A privacy-conscious voice assistant, confirmed working end to end:
 
@@ -21,6 +21,19 @@ A privacy-conscious voice assistant, confirmed working end to end:
   device queue and safely interrupts an active listening or speaking session.
 - **Zeta visual identity** — mascot boot artwork, a mascot launcher portrait, and a dark
   cyan/amber UI palette carried through the face, speech bubbles, status bar, and home indicator.
+- **LAN control panel** — browser-based configuration for home geolocation, personality, volume,
+  brightness, sleep, privacy, quiet hours, notification categories, and state-aware LED colors.
+- **Contextual home location** — local questions resolve against a configured Home Assistant home
+  location and weather entity, never an IP-geolocation service.
+- **Interaction profiles** — quiet, balanced, and lively modes control idle behavior; head swipes
+  acknowledge or repeat notifications; a sleepy transition precedes quiet-mode screen-off.
+- **Privacy mode** — visibly indicated by the LED ring and blocks microphone processing, wake-word
+  and proximity activation, screen-tap conversations, and camera capture. Enforced twice: inside the
+  voice client's state machine (saved on the device, so it holds across reboots before the backend
+  reconnects) and on the voice server, which drops device audio and closes the voice connection
+  while privacy is on — see `backend/README.md`'s "Privacy mode" section.
+- **Device network policy** — an allow/block host list, pushed from the control panel and saved on
+  the device, checked before every OTA, asset, voice, notification-media, and camera request.
 - **Do Not Disturb** — a spoken command toggles whether notifications get shown/spoken at all,
   without needing to touch Home Assistant.
 - **Chatbot with expressions** — English persona, emoji-driven face expressions, wake-word or
@@ -49,6 +62,11 @@ NTP server queried every boot, and four M5Stack-cloud-only apps removed from the
 launcher entirely. Full findings and fixes: `backend/README.md`'s "Privacy / network audit"
 section.
 
+v0.4 also fixed a leak the v0.2 audit missed: conversation-memory summaries were routed to
+Zhipu AI's cloud (`open.bigmodel.cn`) by an upstream default, and now go to OpenAI; bridge logs no
+longer record home coordinates or notification text. Known issues, including a warm-reset boot
+loop on this CoreS3: `backend/README.md`'s "Known issues (v0.4)".
+
 Device: M5Stack **CoreS3** (ESP32-S3, 16MB flash, 8MB PSRAM) in the StackChan body kit. Full spec
 sheet and pinout: [`docs/hardware.md`](docs/hardware.md). Full flash backup taken before any
 changes: [`backups/`](backups/README.md).
@@ -68,8 +86,10 @@ StackZeta/
 The firmware is a light fork of [`m5stack/StackChan`](https://github.com/m5stack/StackChan) (ESP-IDF
 C++, bundles [`xiaozhi-esp32`](https://github.com/78/xiaozhi-esp32) as the voice client) — see
 [`docs/architecture-notes.md`](docs/architecture-notes.md) for how the upstream code is organized,
-and [`docs/toolchain.md`](docs/toolchain.md) for the build/flash flow. Firmware changes are kept to
-`firmware/main/` only (nothing patched in the fetched `xiaozhi-esp32` dependency):
+and [`docs/toolchain.md`](docs/toolchain.md) for the build/flash flow. Firmware changes live in
+`firmware/main/`, with one deliberate exception: `firmware/patches/xiaozhi-esp32.patch` (applied by
+`fetch_repos.py`) carries small edits to the fetched `xiaozhi-esp32` dependency that cannot be made
+from outside it — see the last bullet below:
 
 - `firmware/sdkconfig.defaults` — `CONFIG_OTA_URL` and `CONFIG_NOTIFY_WS_URL` point at the
   self-hosted backend instead of M5Stack's cloud; `CONFIG_STACKCHAN_SERVER_URL` overridden to an
@@ -90,6 +110,12 @@ and [`docs/toolchain.md`](docs/toolchain.md) for the build/flash flow. Firmware 
   also queried a Chinese NTP pool on every boot, unconditionally).
 - `firmware/main/main.cpp`, `firmware/main/apps/app_setup/app_setup.cpp` — three M5Stack-cloud-only
   apps and the Setup app's Account/unbind menu removed from the on-device launcher (see "Privacy").
+- `firmware/patches/xiaozhi-esp32.patch` — on top of upstream M5Stack's own edits: the privacy-mode
+  gate in `Application` (wake word, push-to-talk, chat toggle, and any transition into listening are
+  refused while privacy mode is on; the stock idle handler would otherwise re-enable the wake word),
+  network-policy checks on OTA, asset, WebSocket and MQTT URLs, and a raw-PCM playback entry point
+  used for the settings acknowledgement tone. Regenerate it with `git -C firmware/xiaozhi-esp32 diff`
+  after editing the fetched tree, or a fresh fetch will silently drop those changes.
 
 The backend ([`backend/`](backend/README.md)) is a Docker Compose stack on this machine:
 `xiaozhi-esp32-server` (voice/OTA, ASR/LLM/VLLM/TTS routing — all pointed at either local providers

@@ -44,12 +44,21 @@ selected_module:
   # OpenAI instead, matching the LLM.
   VLLM: OpenAIVLLM
   Intent: function_call
-  # mem_local_short: conversations are summarized (using our existing
-  # OpenAILLM, since no llm: override is given below) and kept on this
-  # server only — the project's own config comments recommend this option
+  # mem_local_short: conversations are summarized and kept on this server
+  # only — the project's own config comments recommend this option
   # specifically for privacy-focused deployments, over cloud options like
-  # mem0ai.
+  # mem0ai. The summarizer LLM is set explicitly in the Memory section
+  # below: upstream's default is ChatGLMLLM (open.bigmodel.cn, China).
   Memory: mem_local_short
+
+Memory:
+  mem_local_short:
+    type: mem_local_short
+    # Upstream defaults this to ChatGLMLLM, which would send every
+    # conversation to Zhipu AI's cloud (open.bigmodel.cn) for summarizing.
+    # It only failed because the placeholder key can't be encoded into an
+    # HTTP header. Route summaries through the same approved OpenAI LLM.
+    llm: OpenAILLM
 
 Intent:
   function_call:
@@ -101,9 +110,12 @@ prompt: |
   clearly calls for one; otherwise just answer directly.
 
   There is no dedicated weather tool. For weather questions, call
-  homeassistant__GetLiveContext to read the current state of the house,
-  including any weather entity, and answer from that — don't say you can't
-  check the weather without having tried this first.
+  self.context.get_home_location first to resolve what "here" means, then
+  call homeassistant__GetLiveContext to read the configured weather entity
+  and current state of the house. Answer from that context — don't say you
+  can't check the weather without having tried these tools first. Treat the
+  configured home as the location for unqualified weather, sunrise, sunset,
+  and outside-temperature questions; never infer location from an IP address.
 
   Never mention that you are an AI language model, and never apologise for
   being a robot. If you don't know something, say so plainly and briefly.

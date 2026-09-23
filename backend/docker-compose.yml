@@ -22,7 +22,13 @@ services:
       # large/central to mirror as whole-file overrides — see
       # overrides/patch_chinese_strings.py and overrides/README.md.
       - ./xiaozhi-server/overrides/patch_chinese_strings.py:/opt/patch_chinese_strings.py
-    command: sh -c "python /opt/patch_chinese_strings.py && python app.py"
+      # Server-side privacy enforcement: reads privacy_mode from the control
+      # panel's state (read-only) and drops device audio while it is on.
+      # The patch fails closed — see overrides/patch_privacy.py.
+      - ./xiaozhi-server/overrides/stackzeta_privacy.py:/opt/xiaozhi-esp32-server/core/utils/stackzeta_privacy.py
+      - ./xiaozhi-server/overrides/patch_privacy.py:/opt/patch_privacy.py
+      - stackzeta-state:/opt/stackzeta-state:ro
+    command: sh -c "python /opt/patch_privacy.py && python /opt/patch_chinese_strings.py && python app.py"
     depends_on:
       - piper-tts
 
@@ -45,7 +51,11 @@ services:
       - "8090:8090" # device connects here for notifications (separate from the voice WS)
     volumes:
       - notify-images:/data/images
+      - notify-audio:/data/audio
+      - stackzeta-state:/data/state
 
 volumes:
   piper-voices:
   notify-images:
+  notify-audio:
+  stackzeta-state:

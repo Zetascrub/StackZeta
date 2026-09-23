@@ -32,6 +32,51 @@ Self-hosted voice-assistant backend for the StackChan, running on this machine v
   show/speak a queued notification (not mid-conversation) — see
   `firmware/main/stackchan/notify/notify_client.cpp`.
 
+## Local control panel
+
+Open `http://<StackZeta-host>:8090/` from the LAN. The control panel stores its configuration and
+the most recent 100 notifications in the `stackzeta-state` Docker volume, then pushes device
+settings over the existing notification WebSocket. It controls home geolocation, personality and
+idle activity, volume, brightness, sleep timeout, privacy mode, DND/quiet hours, notification
+category policy, and LED state colors.
+
+The **Import from Home Assistant** action reads HA's configured home name, coordinates, and
+timezone from `/api/config` using the bridge's server-side token. It does not use browser
+geolocation, IP geolocation, or any external lookup. Set the preferred HA weather entity after
+import if it is not `weather.home`.
+
+Notification payloads may include `category` (`general`, `security`, `doorbell`, `reminder`, or
+`household`). Category defaults decide color, speech, and urgency unless the payload explicitly
+provides boolean `speak` or `urgent` values. Quiet hours mute routine speech; urgent alerts still
+sound. DND records history but suppresses delivery. On the robot, swipe forward across the head
+touch strip to acknowledge the last notification or backward to repeat it.
+
+## Privacy mode (v0.4)
+
+Toggled from the control panel. Enforced in two independent layers:
+
+1. **On the device** (`firmware/patches/xiaozhi-esp32.patch` + `notify_client.cpp`): wake word,
+   push-to-talk, screen-tap chat, proximity wake and camera capture are refused; any transition
+   into listening is blocked; a server reply that arrives after privacy turns on is ignored; turning
+   privacy on mid-conversation aborts speech and drops the session. The setting is saved in NVS, so
+   it holds from boot before the backend reconnects. The LED ring shows the privacy colour (default
+   `#FF0000`) and never goes dark in standby while privacy is on.
+2. **On the voice server** (`xiaozhi-server/overrides/stackzeta_privacy.py`, wired in by
+   `patch_privacy.py`): reads `privacy_mode` from the control panel's saved state (the
+   `stackzeta-state` volume, mounted read-only), and while it is on refuses new voice connections,
+   drops device audio and `listen` messages, discards buffered audio, and closes any open voice
+   connection within ~0.5 s. The patch **fails closed**: if an upstream image change breaks it, the
+   voice server does not start.
+
+Layer 2 exists because the device side is not fully observable (no serial logging after boot, and
+its voice socket was seen to stay open after privacy-on). Verified end to end on hardware: toggling
+privacy on mid-conversation, nothing spoken while the ring was red reached ASR, and the wake word
+worked again after privacy was turned off.
+
+Known limit: audio captured in the instant *before* privacy turns on can still be transcribed as
+the toggle lands (the device's final `listen stop` races the server's ≤0.25 s state check). Audio
+captured after it cannot.
+
 ## Triggering notifications from Home Assistant
 
 Any HA automation can trigger one by publishing a JSON payload to the MQTT topic in `.env`
@@ -159,9 +204,12 @@ question without being told — see the `prompt:` block in `.config.yaml`).
 
 ## Persistent memory
 
-`Memory: mem_local_short` (in `.config.yaml`) summarizes each conversation using the same
-`OpenAILLM` already configured (no `llm:` override needed under `Memory:` — it falls back to the
-main LLM) and keeps the summaries on this server only. Chosen specifically over cloud options like
+`Memory: mem_local_short` (in `.config.yaml`) summarizes each conversation and keeps the summaries
+on this server only. The summarizer LLM **must** be set explicitly (`Memory.mem_local_short.llm:
+OpenAILLM`): upstream's built-in default is `ChatGLMLLM` (Zhipu AI, `open.bigmodel.cn`), and the
+earlier assumption that it falls back to the main LLM was wrong. Until v0.4 every summary attempt
+was routed there and failed only because the placeholder API key can't be encoded into an HTTP
+header — so no memory was ever actually saved before v0.4. Chosen specifically over cloud options like
 `mem0ai`, which the project's own config comments recommend against for privacy-focused
 deployments — this keeps conversation history from ever leaving the LAN, matching the same
 LAN/OpenAI-only boundary as everything else in this stack.
@@ -315,6 +363,24 @@ wedging the device. This still needs a live slow-response/failure-path test on h
   "Start AI Agent on boot" switch) — it's a persisted device-side setting, not something this repo
   can set from the backend. Until it's on, the device boots to the app launcher instead of straight
   into the assistant.
+
+## Known issues (v0.4)
+
+- **Warm reset boot-loops the CoreS3** (`PSRAM chip is not connected`), on v0.3 firmware too, so
+  not caused by v0.4. Any reset other than a full power-off (after flashing, and presumably after
+  an OTA update) needs a power cycle: hold the side button ~6 s, then press. Flash with
+  `esptool ... --after no_reset write_flash @flash_args` from `firmware/build` and power-cycle.
+- **Speaker crackle** was heard once on v0.4 after a privacy toggle and could not be reproduced
+  afterwards (bisected across LEDs, activity profile, standby and privacy-on boot; v0.3 was clean).
+- **Device event reporting** (`NotifyClient::ReportEvent` → `device_event` on the notify socket)
+  is compiled in and verified present in the binary, but no event frame ever leaves the device —
+  unexplained. The device's `listen stop` on privacy-on is similarly unexplained.
+- **App logs are not visible over USB** after boot (likely the USB host component taking the port).
+- **DND set by voice is overwritten** by the next settings push from the control panel.
+- The control panel and its API are **unauthenticated** on the LAN.
+- **Memory summaries are written in Chinese** (upstream's `mem_local_short` summarizer prompt is
+  Chinese), and are injected into the LLM context — a risk to the English-only output goal. Only
+  surfaced in v0.4, since memory never saved before. Stored in `data/.memory.yaml` (gitignored).
 
 ## Deferred
 

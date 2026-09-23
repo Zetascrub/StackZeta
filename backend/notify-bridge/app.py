@@ -17,7 +17,12 @@ import json
 import logging
 import os
 import uuid
+import ipaddress
+from copy import deepcopy
+from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 import aiohttp
 import paho.mqtt.client as mqtt
@@ -49,6 +54,192 @@ AUDIO_DIR = Path(os.environ.get("AUDIO_DIR", "/data/audio"))
 AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 MAX_STORED_AUDIO = 50
 
+STATE_DIR = Path(os.environ.get("STATE_DIR", "/data/state"))
+STATE_DIR.mkdir(parents=True, exist_ok=True)
+CONFIG_PATH = STATE_DIR / "config.json"
+HISTORY_PATH = STATE_DIR / "history.json"
+CONTROL_HTML_PATH = Path(__file__).with_name("control.html")
+MAX_HISTORY = 100
+
+DEFAULT_CONFIG = {
+    "location": {
+        "name": "Home",
+        "latitude": None,
+        "longitude": None,
+        "timezone": "Europe/London",
+        "weather_entity": "weather.home",
+    },
+    "personality": {
+        "activity": "balanced",
+        "greetings_enabled": True,
+        "greeting_cooldown_minutes": 120,
+    },
+    "device": {
+        "volume": 70,
+        "brightness": 80,
+        "standby_timeout_seconds": 300,
+        "standby_screen_off": True,
+        "standby_leds_off": True,
+        "standby_park_head": True,
+        "sleep_timeout_seconds": 600,
+        "privacy_mode": False,
+    },
+    "network_policy": {
+        "enabled": True,
+        "allowed_hosts": ["192.168.8.10", "192.168.8.135", "api.openai.com", "pool.ntp.org"],
+        "blocked_hosts": [
+            "open.bigmodel.cn", "whois.pconline.com.cn", "cn.pool.ntp.org",
+            "api.tenclass.net", "47.113.125.164", "ezdata2.m5stack.com",
+            "uiflow2.m5stack.com",
+        ],
+    },
+    "notifications": {
+        "dnd": False,
+        "quiet_hours_enabled": False,
+        "quiet_start": "22:00",
+        "quiet_end": "07:00",
+        "categories": {
+            "general": {"color": "#00B8D4", "speak": True, "urgent": False},
+            "security": {"color": "#FF5A36", "speak": True, "urgent": True},
+            "doorbell": {"color": "#FFAA24", "speak": True, "urgent": True},
+            "reminder": {"color": "#7B8CFF", "speak": True, "urgent": False},
+            "household": {"color": "#2ECF73", "speak": True, "urgent": False},
+        },
+    },
+    "led": {
+        "idle": "#00141D",
+        "listening": "#00E5F0",
+        "speaking": "#0A799B",
+        "notification": "#FFAA24",
+        "urgent": "#FF5A36",
+        "dnd": "#7B3FB2",
+        "privacy": "#FF0000",
+        "offline": "#303840",
+    },
+}
+
+
+def _deep_merge(base: dict, update: dict) -> dict:
+    result = deepcopy(base)
+    for key, value in update.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def _load_json(path: Path, fallback):
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return deepcopy(fallback)
+
+
+def _atomic_write_json(path: Path, value) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, indent=2) + "\n")
+    temporary.replace(path)
+
+
+config = _deep_merge(DEFAULT_CONFIG, _load_json(CONFIG_PATH, {}))
+history: list[dict] = _load_json(HISTORY_PATH, [])
+
+
+def _public_config() -> dict:
+    return deepcopy(config)
+
+
+def _validate_config(candidate: dict) -> dict:
+    merged = _deep_merge(DEFAULT_CONFIG, candidate)
+    location = merged["location"]
+    for key, low, high in (("latitude", -90, 90), ("longitude", -180, 180)):
+        value = location.get(key)
+        if value in (None, ""):
+            location[key] = None
+        else:
+            value = float(value)
+            if not low <= value <= high:
+                raise ValueError(f"{key} must be between {low} and {high}")
+            location[key] = value
+    ZoneInfo(str(location["timezone"]))
+
+    personality = merged["personality"]
+    if personality["activity"] not in {"quiet", "balanced", "lively"}:
+        raise ValueError("activity must be quiet, balanced, or lively")
+    personality["greeting_cooldown_minutes"] = max(
+        5, min(1440, int(personality["greeting_cooldown_minutes"]))
+    )
+
+    device = merged["device"]
+    device["volume"] = max(0, min(100, int(device["volume"])))
+    device["brightness"] = max(5, min(100, int(device["brightness"])))
+    device["standby_timeout_seconds"] = max(
+        0, min(86400, int(device["standby_timeout_seconds"]))
+    )
+    device["sleep_timeout_seconds"] = max(30, min(86400, int(device["sleep_timeout_seconds"])))
+
+    network_policy = merged["network_policy"]
+    network_policy["enabled"] = bool(network_policy.get("enabled", True))
+    for key in ("allowed_hosts", "blocked_hosts"):
+        values = network_policy.get(key, [])
+        if not isinstance(values, list):
+            raise ValueError(f"network_policy.{key} must be a list")
+        cleaned = []
+        for value in values:
+            host = str(value).strip().lower().rstrip(".")
+            if not host or any(ch in host for ch in "/:@?#"):
+                raise ValueError(f"Invalid host in network_policy.{key}: {value}")
+            if host not in cleaned:
+                cleaned.append(host)
+        network_policy[key] = cleaned[:64]
+
+    for name, color in merged["led"].items():
+        if not isinstance(color, str) or len(color) != 7 or not color.startswith("#"):
+            raise ValueError(f"LED color {name} must use #RRGGBB")
+        int(color[1:], 16)
+    return merged
+
+
+def _host_matches(host: str, rule: str) -> bool:
+    host = host.lower().rstrip(".")
+    rule = rule.lower().rstrip(".")
+    if rule.startswith("*."):
+        suffix = rule[1:]
+        return host.endswith(suffix) and host != suffix[1:]
+    return host == rule
+
+
+def _url_allowed(url: str) -> bool:
+    policy = config["network_policy"]
+    if not policy["enabled"]:
+        return True
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        if parsed.scheme not in {"http", "https", "ws", "wss"} or not host:
+            return False
+        # Normalise IP literals before comparison and reject malformed ones.
+        try:
+            host = str(ipaddress.ip_address(host))
+        except ValueError:
+            pass
+    except ValueError:
+        return False
+    if any(_host_matches(host, rule) for rule in policy["blocked_hosts"]):
+        return False
+    allowed = policy["allowed_hosts"]
+    return not allowed or any(_host_matches(host, rule) for rule in allowed)
+
+
+def _is_quiet_hours() -> bool:
+    settings = config["notifications"]
+    if not settings["quiet_hours_enabled"]:
+        return False
+    now = datetime.now(ZoneInfo(config["location"]["timezone"])).strftime("%H:%M")
+    start, end = settings["quiet_start"], settings["quiet_end"]
+    return start <= now < end if start < end else now >= start or now < end
+
 
 class DeviceHub:
     """Tracks the single connected StackChan (v0.1: one device)."""
@@ -61,6 +252,7 @@ class DeviceHub:
             log.warning("a new device connection replaced an existing one")
         self.ws = ws
         log.info("device connected")
+        await self.send_settings()
 
     def unregister(self, ws: web.WebSocketResponse) -> None:
         if self.ws is ws:
@@ -69,16 +261,23 @@ class DeviceHub:
 
     async def send(self, message: dict) -> bool:
         if self.ws is None:
-            log.warning("no device connected, dropping notification: %s", message.get("title"))
+            log.warning("no device connected, dropping %s message", message.get("type"))
             return False
         try:
             await self.ws.send_str(json.dumps(message))
-            log.info("sent to device: %s", message)
+            # Type and id only: settings carry the home location and
+            # notifications carry message text, neither of which belongs in logs.
+            log.info("sent %s to device (id=%s)", message.get("type"), message.get("id", "-"))
             return True
         except Exception:
             log.exception("failed to send notification to device")
             self.ws = None
             return False
+
+    async def send_settings(self, acknowledge: bool = False) -> bool:
+        return await self.send(
+            {"type": "settings", "settings": _public_config(), "acknowledge": acknowledge}
+        )
 
 
 hub = DeviceHub()
@@ -91,10 +290,32 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
     # TCP/WS-layer close detection, which was unreliable in practice).
     ws = web.WebSocketResponse()
     await ws.prepare(request)
+    log.info("device websocket peer=%s", request.remote)
     await hub.register(ws)
     try:
-        async for _ in ws:
-            pass
+        async for msg in ws:
+            if msg.type != aiohttp.WSMsgType.TEXT:
+                log.info("ignoring non-text device frame: %s", msg.type)
+                continue
+            try:
+                payload = json.loads(msg.data)
+            except json.JSONDecodeError:
+                log.info("ignoring non-JSON device frame: %r", str(msg.data)[:120])
+                continue
+            if payload.get("type") == "notification_ack":
+                notification_id = str(payload.get("id", ""))
+                for item in history:
+                    if item.get("id") == notification_id:
+                        item["acknowledged"] = True
+                        item["acknowledged_at"] = datetime.now().astimezone().isoformat()
+                        _atomic_write_json(HISTORY_PATH, history)
+                        break
+            elif payload.get("type") == "device_event":
+                log.info("device event: %s", str(payload.get("event", ""))[:200])
+            elif payload.get("type") == "settings_ack":
+                log.info("device acknowledged settings (beep played=%s)", payload.get("played"))
+            elif payload.get("type") != "ping":
+                log.info("unhandled device message type: %s", payload.get("type"))
     finally:
         hub.unregister(ws)
     return ws
@@ -111,13 +332,18 @@ def _prune_old_images() -> None:
 
 
 async def fetch_and_prepare_image(url: str) -> str | None:
+    if not _url_allowed(url):
+        log.warning("network policy blocked notification image URL: %s", url)
+        return None
     headers = {}
     if HA_BASE_URL and url.startswith(HA_BASE_URL) and HA_TOKEN:
         headers["Authorization"] = f"Bearer {HA_TOKEN}"
 
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            async with session.get(
+                url, headers=headers, timeout=aiohttp.ClientTimeout(total=10), allow_redirects=False
+            ) as resp:
                 resp.raise_for_status()
                 raw = await resp.read()
     except Exception:
@@ -236,16 +462,87 @@ async def health_handler(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok", "device_connected": hub.ws is not None})
 
 
-async def handle_mqtt_notification(payload: dict) -> None:
-    log.info("received MQTT notification: %s", payload)
+async def control_handler(request: web.Request) -> web.StreamResponse:
+    return web.FileResponse(CONTROL_HTML_PATH)
+
+
+async def config_get_handler(request: web.Request) -> web.Response:
+    return web.json_response(_public_config())
+
+
+async def config_put_handler(request: web.Request) -> web.Response:
+    global config
     try:
+        candidate = await request.json()
+        if not isinstance(candidate, dict):
+            raise ValueError("configuration must be an object")
+        config = _validate_config(candidate)
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise web.HTTPBadRequest(text=str(exc)) from exc
+    _atomic_write_json(CONFIG_PATH, config)
+    await hub.send_settings(acknowledge=True)
+    return web.json_response(_public_config())
+
+
+async def import_home_assistant_handler(request: web.Request) -> web.Response:
+    global config
+    if not HA_BASE_URL or not HA_TOKEN:
+        raise web.HTTPBadRequest(text="HA_BASE_URL and HA_TOKEN must be configured")
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{HA_BASE_URL}/api/config",
+                headers={"Authorization": f"Bearer {HA_TOKEN}"},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as response:
+                response.raise_for_status()
+                ha_config = await response.json()
+    except Exception as exc:
+        raise web.HTTPBadGateway(text="Could not read Home Assistant configuration") from exc
+
+    candidate = _public_config()
+    location = candidate["location"]
+    location["name"] = str(ha_config.get("location_name") or location["name"])
+    location["latitude"] = ha_config.get("latitude")
+    location["longitude"] = ha_config.get("longitude")
+    location["timezone"] = str(ha_config.get("time_zone") or location["timezone"])
+    config = _validate_config(candidate)
+    _atomic_write_json(CONFIG_PATH, config)
+    await hub.send_settings(acknowledge=True)
+    return web.json_response(_public_config())
+
+
+async def history_handler(request: web.Request) -> web.Response:
+    return web.json_response(history)
+
+
+async def history_clear_handler(request: web.Request) -> web.Response:
+    history.clear()
+    _atomic_write_json(HISTORY_PATH, history)
+    return web.json_response({"ok": True})
+
+
+async def handle_mqtt_notification(payload: dict) -> None:
+    log.info("received MQTT notification (category=%s)", payload.get("category", "general"))
+    try:
+        category = str(payload.get("category", "general"))
+        policy = config["notifications"]["categories"].get(
+            category, config["notifications"]["categories"]["general"]
+        )
+        notification_id = uuid.uuid4().hex
+        urgent = payload.get("urgent") if isinstance(payload.get("urgent"), bool) else policy["urgent"]
+        speak = payload.get("speak") if isinstance(payload.get("speak"), bool) else policy["speak"]
+        if _is_quiet_hours() and not urgent:
+            speak = False
+
         message = {
             "type": "notification",
+            "id": notification_id,
             "title": str(payload.get("title", "")),
             "body": str(payload.get("body", "")),
-            # Strict boolean on purpose: a quoted string such as "false"
-            # must not accidentally become an interrupting notification.
-            "urgent": payload.get("urgent") is True,
+            "category": category,
+            "color": policy["color"],
+            "urgent": urgent,
         }
 
         image_url = payload.get("image_url")
@@ -254,14 +551,32 @@ async def handle_mqtt_notification(payload: dict) -> None:
             if filename:
                 message["image_url"] = f"{PUBLIC_BASE_URL}/images/{filename}"
 
-        speak = payload.get("speak", True)
         if speak:
             announce_text = " ".join(p for p in (message["title"], message["body"]) if p)
             audio_filename = await synthesize_notification_audio(announce_text)
             if audio_filename:
                 message["audio_url"] = f"{PUBLIC_BASE_URL}/audio/{audio_filename}"
 
-        await hub.send(message)
+        delivered = False
+        if not config["notifications"]["dnd"]:
+            delivered = await hub.send(message)
+
+        history.insert(
+            0,
+            {
+                "id": notification_id,
+                "timestamp": datetime.now().astimezone().isoformat(),
+                "title": message["title"],
+                "body": message["body"],
+                "category": category,
+                "urgent": urgent,
+                "spoken": speak,
+                "delivered": delivered,
+                "acknowledged": False,
+            },
+        )
+        del history[MAX_HISTORY:]
+        _atomic_write_json(HISTORY_PATH, history)
     except Exception:
         log.exception("unhandled error while processing MQTT notification")
 
@@ -309,6 +624,12 @@ async def main() -> None:
     app.router.add_get("/images/{filename}", images_handler)
     app.router.add_get("/audio/{filename}", audio_handler)
     app.router.add_get("/health", health_handler)
+    app.router.add_get("/", control_handler)
+    app.router.add_get("/api/config", config_get_handler)
+    app.router.add_put("/api/config", config_put_handler)
+    app.router.add_post("/api/import-home-assistant", import_home_assistant_handler)
+    app.router.add_get("/api/history", history_handler)
+    app.router.add_delete("/api/history", history_clear_handler)
 
     runner = web.AppRunner(app)
     await runner.setup()
