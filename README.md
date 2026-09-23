@@ -130,6 +130,21 @@ The community project [BrettKinny/dotty-stackchan](https://github.com/BrettKinny
 (same upstream, self-hosted voice backend) was useful reference material during planning — see
 [`docs/references.md`](docs/references.md) — but wasn't cloned or built on directly.
 
-## Deferred
+## Roadmap: v0.5
 
-- Local LLM option (OpenAI is the only backend wired up so far).
+1. **Warm-reset boot loop** — find why any non-power-on reset fails PSRAM init; it would strand the
+   device after an OTA update.
+2. **Device logs over USB** — a debug build that leaves the USB port to the console, to resolve the
+   unexplained device behaviour (missing `device_event` frames, `listen stop` on privacy-on).
+3. **Local LLM** — Ollama on the host GPU (RTX 4070), removing OpenAI as the last external service;
+   memory summaries move with it, and the summarizer prompt is rewritten in English.
+4. **Control panel lock-down** — access token plus Host-header / DNS-rebinding protection.
+5. **English-only firmware text** — translate every Chinese or other non-English string that can
+   reach the LLM, screen, speaker or logs (found so far: the press-to-talk MCP tool description,
+   which is sent to the LLM; five Ogg demuxer log messages; one NT26 board string), and all comments
+   in our own `firmware/main/` (~545 lines). Comments inside fetched dependencies (xiaozhi core,
+   mooncake, smooth_ui_toolkit; ~2,500 lines) stay as-is: comments can't contact anything, and an
+   audit of the built binary's URLs/hosts (see `docs/toolchain.md`) found no unauthorised
+   endpoints behind them.
+6. Smaller items — DND sync between voice and the control panel, a head-touch privacy toggle, and
+   viewing/deleting stored memories from the panel.

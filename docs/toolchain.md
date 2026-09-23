@@ -68,3 +68,23 @@ Do one build+flash of the **unmodified** upstream tree first (`upstream/StackCha
 cloned, no edits) to confirm the whole toolchain works end to end, before making any custom
 changes. A full flash backup already exists in [`backups/`](../backups/README.md) as a fallback if
 anything goes wrong.
+
+## `sdkconfig` drift
+
+`sdkconfig.defaults` only seeds keys that are **missing** from `firmware/sdkconfig`; it never
+overrides a value an existing `sdkconfig` already has. A local `sdkconfig` generated before a
+default was added keeps the old value silently. This happened with `CONFIG_STACKCHAN_SERVER_URL`,
+which stayed at M5Stack's `http://47.113.125.164:12800` (China) despite the inert override in
+`sdkconfig.defaults` (unused code at the time, so never actually called). After changing
+`sdkconfig.defaults`, check that the value really took:
+
+```bash
+grep -E "OTA_URL|NOTIFY_WS_URL|STACKCHAN_SERVER_URL" upstream/StackChan/firmware/sdkconfig
+```
+
+and audit the built binary itself for hosts, which is the ground truth for what can be contacted:
+
+```bash
+strings -n 6 upstream/StackChan/firmware/build/stack-chan.bin | grep -oE "(https?|wss?|mqtts?)://[^ \"]+" | sort -u
+```
+
