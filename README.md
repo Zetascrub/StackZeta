@@ -14,6 +14,7 @@
   <img alt="Hardware" src="https://img.shields.io/badge/hardware-M5Stack%20CoreS3-03131D">
   <img alt="Home Assistant" src="https://img.shields.io/badge/Home%20Assistant-MCP%20%2B%20MQTT-18BCF2">
   <img alt="Privacy" src="https://img.shields.io/badge/privacy-local%20first-FFAA24">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-F4F0E4"></a>
 </p>
 
 ---
@@ -155,3 +156,9 @@ Built on the shoulders of [M5Stack StackChan](https://github.com/m5stack/StackCh
 [Piper](https://github.com/rhasspy/piper) and [FunASR](https://github.com/modelscope/FunASR).
 [BrettKinny/dotty-stackchan](https://github.com/BrettKinny/dotty-stackchan), another self-hosted
 StackChan project, was a helpful reference during planning.
+
+## License
+
+StackZeta is released under the [MIT License](LICENSE). The firmware patch and the backend's
+`xiaozhi-server/overrides/` modify code from M5Stack StackChan, xiaozhi-esp32 and
+xiaozhi-esp32-server, all MIT-licensed; their original copyright notices apply to those parts.
