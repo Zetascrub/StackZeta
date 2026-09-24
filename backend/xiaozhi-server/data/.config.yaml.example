@@ -3,13 +3,14 @@
 # appear here — anything omitted falls back to those defaults.
 #
 # Copy this file to `.config.yaml` (gitignored) and fill in the real values.
-# `.config.yaml` must never be committed — it holds the OpenAI API key.
+# `.config.yaml` must never be committed. The OpenAI API key can be set in
+# the control panel's Keys tab instead (it then overrides api_key below).
 
 server:
   # LAN IP of the machine running this Docker stack (not 127.0.0.1 — the
   # device on WiFi needs to reach this address directly).
-  websocket: ws://192.168.8.10:8000/xiaozhi/v1/
-  vision_explain: http://192.168.8.10:8003/mcp/vision/explain
+  websocket: ws://192.168.1.10:8000/xiaozhi/v1/
+  vision_explain: http://192.168.1.10:8003/mcp/vision/explain
 
 # Actual idle-timeout is this + a fixed 60s grace period the server adds in
 # its own code. Pushing this all the way to 0 turned out to also cut off the

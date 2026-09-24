@@ -10,7 +10,6 @@ Confirmed by connecting with `esptool` on 2026-09-22:
 | Flash | 16MB, quad mode |
 | PSRAM | 8MB (per CoreS3 spec, not independently verified over USB) |
 | USB | Native USB-Serial/JTAG, enumerates as `/dev/ttyACM0` on Linux |
-| MAC | `80:45:6b:56:29:28` |
 
 This matches the **M5Stack CoreS3** head unit that the StackChan kit is built on (not the older
 Core2, which uses a plain ESP32, not S3).

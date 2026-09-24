@@ -164,6 +164,10 @@ def main() -> int:
             skipped += 1
             continue
 
+        if old not in content and new in content:
+            ok += 1  # already applied (container restarted, not recreated)
+            continue
+
         count = content.count(old)
         if count == 0:
             print(

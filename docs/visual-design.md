@@ -1,6 +1,7 @@
 # Visual design
 
-StackZeta's device UI follows the Zeta mascot artwork in `/mnt/Storage/Coding/Misc/Mascot/`.
+StackZeta's device UI follows the Zeta mascot artwork (source image:
+`docs/artwork/stackzeta-boot-source.png`).
 The intentionally small palette keeps the 320×240 display legible:
 
 | Role | Hex | Use |

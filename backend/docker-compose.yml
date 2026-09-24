@@ -27,8 +27,11 @@ services:
       # The patch fails closed — see overrides/patch_privacy.py.
       - ./xiaozhi-server/overrides/stackzeta_privacy.py:/opt/xiaozhi-esp32-server/core/utils/stackzeta_privacy.py
       - ./xiaozhi-server/overrides/patch_privacy.py:/opt/patch_privacy.py
+      # Keys set in the control panel (Keys tab) override the config files.
+      - ./xiaozhi-server/overrides/stackzeta_secrets.py:/opt/xiaozhi-esp32-server/core/utils/stackzeta_secrets.py
+      - ./xiaozhi-server/overrides/patch_secrets.py:/opt/patch_secrets.py
       - stackzeta-state:/opt/stackzeta-state:ro
-    command: sh -c "python /opt/patch_privacy.py && python /opt/patch_chinese_strings.py && python app.py"
+    command: sh -c "python /opt/patch_privacy.py && python /opt/patch_secrets.py && python /opt/patch_chinese_strings.py && python app.py"
     depends_on:
       - piper-tts
 

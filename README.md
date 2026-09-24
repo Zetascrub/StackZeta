@@ -138,7 +138,8 @@ The community project [BrettKinny/dotty-stackchan](https://github.com/BrettKinny
    unexplained device behaviour (missing `device_event` frames, `listen stop` on privacy-on).
 3. **Local LLM** — Ollama on the host GPU (RTX 4070), removing OpenAI as the last external service;
    memory summaries move with it, and the summarizer prompt is rewritten in English.
-4. **Control panel lock-down** — access token plus Host-header / DNS-rebinding protection.
+4. **Device credential for the notify socket** — the control panel has sign-in, host and origin
+   checks since v0.4, but the device's `/ws` is still open to any LAN client.
 5. **English-only firmware text** — translate every Chinese or other non-English string that can
    reach the LLM, screen, speaker or logs (found so far: the press-to-talk MCP tool description,
    which is sent to the LLM; five Ogg demuxer log messages; one NT26 board string), and all comments

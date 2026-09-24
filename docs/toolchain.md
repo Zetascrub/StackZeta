@@ -11,9 +11,8 @@ reflected in `sdkconfig.defaults`:
 - `esptool` (v5.4.0) — installed at `~/.local/bin/`, used for the flash backup/restore.
 - `platformio` / `pio` — installed but **not the right fit** for this project (StackChan is plain
   ESP-IDF + CMake, not a PlatformIO project). Keep in mind in case it's useful for something else.
-- ESP-IDF **v5.4.2** — installed locally under `~/.cache/ghostwire-tools/esp-idf-v5.4.2/` (from
-  an unrelated prior project). **Wrong version** for StackChan (needs 5.5.4) — don't `. export.sh`
-  into this one for StackChan builds without checking, it may silently build against the wrong SDK.
+- If another ESP-IDF version is installed locally for other projects, don't `. export.sh` it for
+  StackChan builds — StackChan needs 5.5.4 and may silently build against the wrong SDK.
 - Docker image `espressif/idf:v5.5.4` — pulled locally as part of this prep. This is the
   recommended way to build, per upstream's own README, since it sidesteps the version-pinning
   problem above entirely.
@@ -58,7 +57,7 @@ becomes a priority.
 
 - Port: `/dev/ttyACM0` (native USB-Serial/JTAG on ESP32-S3 — no separate USB-UART bridge chip, no
   driver install needed on Linux).
-- User is already in the `dialout` group, so no `sudo`/udev rule changes needed for serial access.
+- Your user needs serial-port access (on most Linux distros, membership of the `dialout` group).
 - Flash size: 16MB (`CONFIG_ESPTOOLPY_FLASHSIZE_16MB` in `sdkconfig.defaults` — matches what
   `esptool flash_id` reported).
 

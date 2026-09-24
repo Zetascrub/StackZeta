@@ -9,7 +9,7 @@ depended on.
 
 - `stackchan_firmware_backup_20260922.bin` — full 16MB flash dump, taken 2026-09-22 from the
   as-purchased device (stock M5Stack firmware, never flashed) over `/dev/ttyACM0`.
-  - Chip: ESP32-S3, MAC `80:45:6b:56:29:28`
+  - Chip: ESP32-S3
   - SHA-256: `6aa988a8bb4f618b73475457d4fc2f1312be56ad196f26f245ce1a693297d9ef`
   - Taken with: `esptool.py --port /dev/ttyACM0 --baud 921600 read_flash 0 0x1000000 <file>`
 

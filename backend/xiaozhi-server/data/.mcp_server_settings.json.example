@@ -3,7 +3,7 @@
     "Home Assistant": {
       "command": "mcp-proxy",
       "args": [
-        "http://192.168.8.135:8123/mcp_server/sse"
+        "http://192.168.1.20:8123/mcp_server/sse"
       ],
       "env": {
         "API_ACCESS_TOKEN": "YOUR_HA_LONG_LIVED_ACCESS_TOKEN"

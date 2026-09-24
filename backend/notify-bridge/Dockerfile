@@ -8,8 +8,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py .
-COPY control.html .
+COPY app.py panel_security.py ./
+COPY control.html login.html ./
 
 EXPOSE 8090
 

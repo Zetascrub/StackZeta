@@ -76,3 +76,9 @@ starts either way (skip, not fail), just with that one string reverted to its or
 - **`patch_privacy.py`** — startup patch that wires it into `core/connection.py` (new connections,
   audio frames, a per-connection watcher) and the `listen` message handler. Fails closed: exits
   non-zero, so the container does not start, if any pattern stops matching.
+- **`stackzeta_secrets.py`** / **`patch_secrets.py`** — apply keys set in the control panel's Keys
+  tab (OpenAI key → selected LLM/VLLM, HA token → the "Home Assistant" MCP server) over the config
+  files. Fails open with a warning, since the config-file values still work.
+
+All three startup patches are idempotent: `docker compose restart` and host reboots reuse the
+container, whose files were already patched on the previous start.

@@ -65,11 +65,17 @@ def main() -> int:
         if content is None:
             with open(path, encoding="utf-8") as f:
                 content = f.read()
-            anchor = IMPORT_ANCHORS[rel_path]
-            if content.count(anchor) != 1:
-                print(f"[privacy] FAIL {rel_path}: import anchor not found", file=sys.stderr)
-                return 1
-            content = content.replace(anchor, anchor + IMPORT)
+            # Idempotent: `docker compose restart` (and a host reboot) reuse
+            # the container, whose files were already patched last start.
+            if IMPORT not in content:
+                anchor = IMPORT_ANCHORS[rel_path]
+                if content.count(anchor) != 1:
+                    print(f"[privacy] FAIL {rel_path}: import anchor not found", file=sys.stderr)
+                    return 1
+                content = content.replace(anchor, anchor + IMPORT)
+        if content.count(new) == 1:
+            contents[rel_path] = content
+            continue
         if content.count(old) != 1:
             print(f"[privacy] FAIL {rel_path}: pattern not found exactly once", file=sys.stderr)
             return 1

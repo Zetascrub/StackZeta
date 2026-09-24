@@ -12,7 +12,7 @@ Self-hosted voice-assistant backend for the StackChan, running on this machine v
   small Dockerfile. Not exposed to the host; only `xiaozhi-esp32-server` talks to it, over
   `http://piper-tts:5000/synthesize`. Configured as xiaozhi's `CustomTTS` provider — no server-side
   code changes needed, `custom.py` is a generic HTTP client.
-- **Home Assistant** — not part of this stack, runs externally at `http://192.168.8.135:8123`.
+- **Home Assistant** — not part of this stack, runs externally at `http://192.168.1.20:8123`.
   Reached via its own **Model Context Protocol Server** integration (Settings → Devices & Services
   → Add Integration), which `xiaozhi-esp32-server` connects to as an MCP client
   (`xiaozhi-server/data/.mcp_server_settings.json`, gitignored). This gives the LLM real HA tools
@@ -50,6 +50,24 @@ Notification payloads may include `category` (`general`, `security`, `doorbell`,
 provides boolean `speak` or `urgent` values. Quiet hours mute routine speech; urgent alerts still
 sound. DND records history but suppresses delivery. On the robot, swipe forward across the head
 touch strip to acknowledge the last notification or backward to repeat it.
+
+### Sign-in and keys
+
+The panel requires a password. Set `CONTROL_PANEL_PASSWORD` in `.env`, or leave it empty and a
+password is generated on first start and printed once (`docker logs notify-bridge | grep
+password`); change it in the **Keys** tab. Sessions use an HttpOnly, SameSite=Strict cookie. The
+panel only answers to its own host names (`PUBLIC_BASE_URL`'s host and localhost, plus
+`PANEL_ALLOWED_HOSTS`) and refuses cross-origin writes, which blocks DNS-rebinding and CSRF from
+other web pages. The device's own endpoints (`/ws`, `/images`, `/audio`, `/health`) stay open,
+since the firmware has no credentials.
+
+The **Keys** tab holds the OpenAI API key, the Home Assistant long-lived token, and the MQTT
+username/password. They are write-only: the page shows only whether each is set and where from
+(`panel` or `.env`), and no API ever returns a value. They are stored in `secrets.json` (mode 600)
+on the `stackzeta-state` volume, never in git, and override the equivalents in `.env`,
+`.config.yaml` and `.mcp_server_settings.json`, which remain the fallback. The HA token and MQTT
+credentials apply immediately; the OpenAI key after `docker compose restart xiaozhi-esp32-server`
+(applied by `xiaozhi-server/overrides/stackzeta_secrets.py`).
 
 ## Privacy mode (v0.4)
 
@@ -118,7 +136,7 @@ action:
       topic: stackchan/notify
       payload: >-
         {"title": "Front Door", "body": "Motion detected",
-         "image_url": "http://192.168.8.135:8123{{ state_attr('camera.front_door', 'entity_picture') }}"}
+         "image_url": "http://192.168.1.20:8123{{ state_attr('camera.front_door', 'entity_picture') }}"}
 ```
 
 Both examples use YAML mode (Settings → Automations → ⋮ → Edit in YAML), since the templated
@@ -377,7 +395,9 @@ wedging the device. This still needs a live slow-response/failure-path test on h
   unexplained. The device's `listen stop` on privacy-on is similarly unexplained.
 - **App logs are not visible over USB** after boot (likely the USB host component taking the port).
 - **DND set by voice is overwritten** by the next settings push from the control panel.
-- The control panel and its API are **unauthenticated** on the LAN.
+- The device's notify socket (`/ws`) is **unauthenticated**, so any LAN client can connect, receive
+  the settings pushed to the device (including the home location) and displace the real device.
+  Needs a device credential in firmware.
 - **Memory summaries are written in Chinese** (upstream's `mem_local_short` summarizer prompt is
   Chinese), and are injected into the LLM context — a risk to the English-only output goal. Only
   surfaced in v0.4, since memory never saved before. Stored in `data/.memory.yaml` (gitignored).

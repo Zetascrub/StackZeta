@@ -29,17 +29,16 @@ import paho.mqtt.client as mqtt
 from aiohttp import web
 from PIL import Image
 
+from panel_security import PanelSecurity
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("notify-bridge")
 
 MQTT_HOST = os.environ["MQTT_HOST"]
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
-MQTT_USERNAME = os.environ.get("MQTT_USERNAME") or None
-MQTT_PASSWORD = os.environ.get("MQTT_PASSWORD") or None
 MQTT_TOPIC = os.environ.get("MQTT_TOPIC", "stackchan/notify")
 
 HA_BASE_URL = os.environ.get("HA_BASE_URL", "").rstrip("/")
-HA_TOKEN = os.environ.get("HA_TOKEN", "")
 
 LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "8090"))
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", f"http://localhost:{LISTEN_PORT}")
@@ -86,7 +85,12 @@ DEFAULT_CONFIG = {
     },
     "network_policy": {
         "enabled": True,
-        "allowed_hosts": ["192.168.8.10", "192.168.8.135", "api.openai.com", "pool.ntp.org"],
+        # This server and Home Assistant (from .env), plus the approved
+        # external services. Editable in the control panel.
+        "allowed_hosts": sorted(
+            {h for h in (urlparse(PUBLIC_BASE_URL).hostname, urlparse(HA_BASE_URL).hostname) if h}
+            | {"api.openai.com", "pool.ntp.org"}
+        ),
         "blocked_hosts": [
             "open.bigmodel.cn", "whois.pconline.com.cn", "cn.pool.ntp.org",
             "api.tenclass.net", "47.113.125.164", "ezdata2.m5stack.com",
@@ -141,6 +145,9 @@ def _atomic_write_json(path: Path, value) -> None:
     temporary.write_text(json.dumps(value, indent=2) + "\n")
     temporary.replace(path)
 
+
+security = PanelSecurity(STATE_DIR, PUBLIC_BASE_URL)
+mqtt_client: mqtt.Client | None = None
 
 config = _deep_merge(DEFAULT_CONFIG, _load_json(CONFIG_PATH, {}))
 history: list[dict] = _load_json(HISTORY_PATH, [])
@@ -336,8 +343,9 @@ async def fetch_and_prepare_image(url: str) -> str | None:
         log.warning("network policy blocked notification image URL: %s", url)
         return None
     headers = {}
-    if HA_BASE_URL and url.startswith(HA_BASE_URL) and HA_TOKEN:
-        headers["Authorization"] = f"Bearer {HA_TOKEN}"
+    ha_token = security.secret("ha_token")
+    if HA_BASE_URL and url.startswith(HA_BASE_URL) and ha_token:
+        headers["Authorization"] = f"Bearer {ha_token}"
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -486,13 +494,14 @@ async def config_put_handler(request: web.Request) -> web.Response:
 
 async def import_home_assistant_handler(request: web.Request) -> web.Response:
     global config
-    if not HA_BASE_URL or not HA_TOKEN:
-        raise web.HTTPBadRequest(text="HA_BASE_URL and HA_TOKEN must be configured")
+    ha_token = security.secret("ha_token")
+    if not HA_BASE_URL or not ha_token:
+        raise web.HTTPBadRequest(text="Set HA_BASE_URL in .env and the Home Assistant token in the Keys tab")
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 f"{HA_BASE_URL}/api/config",
-                headers={"Authorization": f"Bearer {HA_TOKEN}"},
+                headers={"Authorization": f"Bearer {ha_token}"},
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as response:
                 response.raise_for_status()
@@ -510,6 +519,25 @@ async def import_home_assistant_handler(request: web.Request) -> web.Response:
     _atomic_write_json(CONFIG_PATH, config)
     await hub.send_settings(acknowledge=True)
     return web.json_response(_public_config())
+
+
+async def secrets_get_handler(request: web.Request) -> web.Response:
+    return web.json_response(security.secret_status())
+
+
+async def secrets_put_handler(request: web.Request) -> web.Response:
+    try:
+        changes = await request.json()
+        if not isinstance(changes, dict):
+            raise ValueError("expected an object of secret names to values")
+        changed = security.update_secrets(changes)
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise web.HTTPBadRequest(text=str(exc)) from exc
+    log.info("secrets updated: %s", ", ".join(sorted(changed)))  # names only, never values
+    if changed & {"mqtt_username", "mqtt_password"} and mqtt_client is not None:
+        _apply_mqtt_credentials(mqtt_client)
+        await asyncio.get_running_loop().run_in_executor(None, mqtt_client.reconnect)
+    return web.json_response(security.secret_status())
 
 
 async def history_handler(request: web.Request) -> web.Response:
@@ -581,6 +609,11 @@ async def handle_mqtt_notification(payload: dict) -> None:
         log.exception("unhandled error while processing MQTT notification")
 
 
+def _apply_mqtt_credentials(client: mqtt.Client) -> None:
+    username = security.secret("mqtt_username")
+    client.username_pw_set(username or None, security.secret("mqtt_password") or None)
+
+
 def start_mqtt(loop: asyncio.AbstractEventLoop) -> mqtt.Client:
     def on_connect(client, userdata, flags, rc, properties=None):
         if rc == 0:
@@ -607,8 +640,7 @@ def start_mqtt(loop: asyncio.AbstractEventLoop) -> mqtt.Client:
         future.add_done_callback(_log_if_failed)
 
     client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
-    if MQTT_USERNAME:
-        client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
+    _apply_mqtt_credentials(client)
     client.on_connect = on_connect
     client.on_message = on_message
     client.connect(MQTT_HOST, MQTT_PORT, keepalive=30)
@@ -619,7 +651,8 @@ def start_mqtt(loop: asyncio.AbstractEventLoop) -> mqtt.Client:
 async def main() -> None:
     loop = asyncio.get_running_loop()
 
-    app = web.Application()
+    global mqtt_client
+    app = web.Application(middlewares=[security.middleware()])
     app.router.add_get("/ws", ws_handler)
     app.router.add_get("/images/{filename}", images_handler)
     app.router.add_get("/audio/{filename}", audio_handler)
@@ -630,6 +663,11 @@ async def main() -> None:
     app.router.add_post("/api/import-home-assistant", import_home_assistant_handler)
     app.router.add_get("/api/history", history_handler)
     app.router.add_delete("/api/history", history_clear_handler)
+    app.router.add_get("/api/secrets", secrets_get_handler)
+    app.router.add_put("/api/secrets", secrets_put_handler)
+    app.router.add_post("/api/login", security.login_handler)
+    app.router.add_post("/api/logout", security.logout_handler)
+    app.router.add_post("/api/password", security.password_handler)
 
     runner = web.AppRunner(app)
     await runner.setup()
