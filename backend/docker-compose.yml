@@ -1,0 +1,64 @@
+services:
+  xiaozhi-esp32-server:
+    image: ghcr.io/xinnan-tech/xiaozhi-esp32-server:server_latest
+    container_name: xiaozhi-esp32-server
+    restart: unless-stopped
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      - TZ=Europe/London
+    ports:
+      - "8000:8000" # websocket (voice)
+      - "8003:8003" # OTA + vision endpoints
+    volumes:
+      - ./xiaozhi-server/data:/opt/xiaozhi-esp32-server/data
+      - ./xiaozhi-server/models/SenseVoiceSmall/model.pt:/opt/xiaozhi-esp32-server/models/SenseVoiceSmall/model.pt
+      # English overrides for built-in plugins that had hardcoded Chinese
+      # response text (see backend/xiaozhi-server/overrides/README.md).
+      - ./xiaozhi-server/overrides/handle_exit_intent.py:/opt/xiaozhi-esp32-server/plugins_func/functions/handle_exit_intent.py
+      - ./xiaozhi-server/overrides/play_music.py:/opt/xiaozhi-esp32-server/plugins_func/functions/play_music.py
+      - ./xiaozhi-server/overrides/vllm_openai.py:/opt/xiaozhi-esp32-server/core/providers/vllm/openai.py
+      # Startup patch for hardcoded Chinese strings/calls in core files too
+      # large/central to mirror as whole-file overrides — see
+      # overrides/patch_chinese_strings.py and overrides/README.md.
+      - ./xiaozhi-server/overrides/patch_chinese_strings.py:/opt/patch_chinese_strings.py
+      # Server-side privacy enforcement: reads privacy_mode from the control
+      # panel's state (read-only) and drops device audio while it is on.
+      # The patch fails closed — see overrides/patch_privacy.py.
+      - ./xiaozhi-server/overrides/stackzeta_privacy.py:/opt/xiaozhi-esp32-server/core/utils/stackzeta_privacy.py
+      - ./xiaozhi-server/overrides/patch_privacy.py:/opt/patch_privacy.py
+      # Keys set in the control panel (Keys tab) override the config files.
+      - ./xiaozhi-server/overrides/stackzeta_secrets.py:/opt/xiaozhi-esp32-server/core/utils/stackzeta_secrets.py
+      - ./xiaozhi-server/overrides/patch_secrets.py:/opt/patch_secrets.py
+      - stackzeta-state:/opt/stackzeta-state:ro
+    command: sh -c "python /opt/patch_privacy.py && python /opt/patch_secrets.py && python /opt/patch_chinese_strings.py && python app.py"
+    depends_on:
+      - piper-tts
+
+  piper-tts:
+    build: ./piper-tts
+    container_name: piper-tts
+    restart: unless-stopped
+    volumes:
+      - piper-voices:/data
+    # Not published to the host on purpose — only xiaozhi-esp32-server talks to it,
+    # over the compose network at http://piper-tts:5000.
+
+  notify-bridge:
+    build: ./notify-bridge
+    container_name: notify-bridge
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8090:8090" # device connects here for notifications (separate from the voice WS)
+    volumes:
+      - notify-images:/data/images
+      - notify-audio:/data/audio
+      - stackzeta-state:/data/state
+
+volumes:
+  piper-voices:
+  notify-images:
+  notify-audio:
+  stackzeta-state:

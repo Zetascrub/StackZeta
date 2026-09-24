@@ -1,0 +1,19 @@
+# Firmware flash dumps (large binaries, keep on disk, keep out of git history)
+backups/*.bin
+
+# upstream/StackChan is the working firmware tree created by firmware/setup.sh (its own
+# git clone); this repo tracks the firmware as firmware/stackzeta-firmware.patch instead.
+upstream/
+
+# Backend secrets and large model/voice files — never commit these.
+backend/xiaozhi-server/data/.config.yaml
+backend/xiaozhi-server/data/.mcp_server_settings.json
+# Conversation memory summaries (personal data, written by mem_local_short).
+backend/xiaozhi-server/data/.memory.yaml
+backend/xiaozhi-server/models/SenseVoiceSmall/model.pt
+backend/.env
+
+.DS_Store
+
+# Python bytecode
+__pycache__/

@@ -1,0 +1,8 @@
+# Copied to upstream/StackChan/firmware/sdkconfig.defaults.local (git-ignored)
+# by firmware/setup.sh. Replace 192.168.1.10 with the LAN IP of the machine
+# running the backend Docker stack. Applied on top of sdkconfig.defaults, but
+# only seeds keys missing from an existing sdkconfig (see docs/toolchain.md,
+# "sdkconfig drift").
+CONFIG_OTA_URL="http://192.168.1.10:8003/xiaozhi/ota/"
+CONFIG_NOTIFY_WS_URL="ws://192.168.1.10:8090/ws"
+CONFIG_STACKCHAN_SERVER_URL="http://127.0.0.1:1"
