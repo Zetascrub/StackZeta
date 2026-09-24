@@ -1,154 +1,157 @@
-# StackZeta
+<p align="center">
+  <img src="docs/artwork/stackzeta-boot-source.png" alt="Zeta, a goggled meerkat mascot, beside the glowing StackZeta logo" width="640">
+</p>
 
-Custom firmware + self-hosted backend for an M5Stack StackChan desktop robot.
+<h1 align="center">StackZeta</h1>
 
-## Status: v0.4 — privacy release
+<p align="center">
+  <b>A little desk robot that listens, talks back, runs your smart home, and keeps your secrets.</b><br>
+  Custom firmware and a self-hosted brain for the M5Stack StackChan.
+</p>
 
-A privacy-conscious voice assistant, confirmed working end to end:
+<p align="center">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.4.1-00B8D4">
+  <img alt="Hardware" src="https://img.shields.io/badge/hardware-M5Stack%20CoreS3-03131D">
+  <img alt="Home Assistant" src="https://img.shields.io/badge/Home%20Assistant-MCP%20%2B%20MQTT-18BCF2">
+  <img alt="Privacy" src="https://img.shields.io/badge/privacy-local%20first-FFAA24">
+</p>
 
-- **Local ASR/TTS** — FunASR + Piper, both self-hosted; only transcribed text (not audio) leaves
-  the LAN, to the LLM.
-- **OpenAI LLM** — pluggable backend, config-driven, no firmware changes needed to swap providers.
-- **Home Assistant control** — real device control via natural conversation (confirmed: lights on/
-  off by area and by name), via HA's own MCP Server integration — no custom integration code.
-- **HA-triggered notifications, with images and spoken audio** — an HA automation can publish to
-  MQTT and have the robot speak and display a notification (with an optional image) on screen,
-  held back until any active conversation finishes. Notification audio is written straight to the
-  speaker codec by the firmware itself, bypassing the voice pipeline's Ogg/Opus decoder entirely —
-  that decoder reliably corrupted the heap and rebooted the device on this kind of
-  dynamically-synthesized speech (see `backend/README.md`'s "Notification audio" section).
-- **Urgent notification priority** — an `urgent` MQTT flag moves an alert to the front of the
-  device queue and safely interrupts an active listening or speaking session.
-- **Zeta visual identity** — mascot boot artwork, a mascot launcher portrait, and a dark
-  cyan/amber UI palette carried through the face, speech bubbles, status bar, and home indicator.
-- **LAN control panel** — browser-based configuration for home geolocation, personality, volume,
-  brightness, sleep, privacy, quiet hours, notification categories, and state-aware LED colors.
-- **Contextual home location** — local questions resolve against a configured Home Assistant home
-  location and weather entity, never an IP-geolocation service.
-- **Interaction profiles** — quiet, balanced, and lively modes control idle behavior; head swipes
-  acknowledge or repeat notifications; a sleepy transition precedes quiet-mode screen-off.
-- **Privacy mode** — visibly indicated by the LED ring and blocks microphone processing, wake-word
-  and proximity activation, screen-tap conversations, and camera capture. Enforced twice: inside the
-  voice client's state machine (saved on the device, so it holds across reboots before the backend
-  reconnects) and on the voice server, which drops device audio and closes the voice connection
-  while privacy is on — see `backend/README.md`'s "Privacy mode" section.
-- **Device network policy** — an allow/block host list, pushed from the control panel and saved on
-  the device, checked before every OTA, asset, voice, notification-media, and camera request.
-- **Do Not Disturb** — a spoken command toggles whether notifications get shown/spoken at all,
-  without needing to touch Home Assistant.
-- **Chatbot with expressions** — English persona, emoji-driven face expressions, wake-word or
-  press-to-talk activation, audio-reactive mouth (real lip-sync, driven by live speaker output
-  level, not random flapping), and no unexpected Chinese output or unexpected external
-  communication — see "Privacy" below.
-- **Persistent memory** — conversations are summarized and remembered across sessions, kept on
-  this server only (no cloud memory service).
-- **Proximity wake** — walking up to the robot triggers a full wake (screen, servos, wake sound),
-  same as saying the wake word, via a proximity sensor with no upstream driver to build on.
-- **Idle sleep** — homes the servos and turns the screen off when idle, wakes on the next wake-word,
-  proximity trigger, or notification.
-- **Conversation motion** — small, natural head movement (nods/turns) while actively listening or
-  speaking, not just static.
-- **Weather** — via Home Assistant's own live-context tool, reading whatever weather integration
-  you already have there (confirmed with PirateWeather) — no separate weather service.
+---
 
-## Privacy
+## Meet Zeta
 
-The explicit design goal, not just a side effect: this device talks to OpenAI (the one approved
-external service) and this LAN — nothing else. A full audit of both the firmware and backend
-found and closed several violations of that beyond the Chinese-language content already mentioned
-above, including a live outbound call to a Chinese IP-geolocation service firing on every single
-conversation, a vision/camera feature that defaulted to a Chinese cloud AI, a hardcoded Chinese
-NTP server queried every boot, and four M5Stack-cloud-only apps removed from the on-device
-launcher entirely. Full findings and fixes: `backend/README.md`'s "Privacy / network audit"
-section.
+Zeta lives on your desk. Say *"Hi StackChan"*, or just walk up to it, and it wakes up, nods along as you talk, and chats back with a mouth that moves in time with its voice. Ask it to dim the
+living room lights, what the weather's doing outside, or what you talked about yesterday.
 
-v0.4 also fixed a leak the v0.2 audit missed: conversation-memory summaries were routed to
-Zhipu AI's cloud (`open.bigmodel.cn`) by an upstream default, and now go to OpenAI; bridge logs no
-longer record home coordinates or notification text. Known issues, including a warm-reset boot
-loop on this CoreS3: `backend/README.md`'s "Known issues (v0.4)".
+When your doorbell rings or the washing machine finishes, Home Assistant can hand Zeta a message.
+Zeta waits politely until you've finished talking, then shows it (with a camera snapshot if you like) and reads
+it aloud. Anything urgent gets through straight away.
 
-Device: M5Stack **CoreS3** (ESP32-S3, 16MB flash, 8MB PSRAM) in the StackChan body kit. Full spec
-sheet and pinout: [`docs/hardware.md`](docs/hardware.md). Full flash backup taken before any
-changes: [`backups/`](backups/README.md).
+And it all runs on hardware you own. Your voice is turned into text **on your own server**, not in
+someone else's cloud. Only the words go out to the AI, and a **privacy mode** shuts the microphone off completely, with a red glow so you always know.
 
-## Repo layout
+## What it can do
+
+| | |
+|---|---|
+| 🗣️ **Talk naturally** | Wake word, walk-up proximity wake, or tap to talk. An English persona with expressive faces and real lip-sync driven by its own voice. |
+| 🏠 **Run your home** | Controls lights and devices by name or room through Home Assistant's built-in MCP server. No custom integration needed. |
+| 🔔 **Deliver notifications** | Any Home Assistant automation can send spoken, on-screen alerts with images. Categories, quiet hours, Do Not Disturb, and urgent alerts that cut through. |
+| 🌦️ **Know where "here" is** | Weather and local questions come from your Home Assistant home location, never from IP geolocation. |
+| 🧠 **Remember you** | Conversations are summarised and remembered across sessions, stored on your server. |
+| 🎛️ **Be tuned from a browser** | A signed-in control panel on your LAN for personality, volume, brightness, standby, LED colours, notification rules, and API keys. |
+| 😴 **Rest when you do** | Quiet, balanced or lively idle personalities; it dozes off, parks its head and switches the screen off when left alone. |
+| 🔒 **Stop listening, properly** | Privacy mode, enforced on the robot *and* on the server. More below. |
+
+## Private by design
+
+StackZeta started life as a stock StackChan, and a full audit of its firmware and voice server
+turned up a lot of unexpected traffic: an IP-geolocation lookup to a Chinese service on every conversation, a
+camera feature wired to a Chinese cloud AI, conversation summaries routed to another, a hardcoded
+Chinese time server, and cloud-only apps. All of it is removed or blocked.
+
+What's left is a simple rule: **Zeta talks to your own network and to OpenAI, and nothing else**
+(apart from a public time server to set its clock).
+
+- 🎙️ **Audio stays home.** Speech recognition ([FunASR](https://github.com/modelscope/FunASR)) and speech
+  synthesis ([Piper](https://github.com/rhasspy/piper)) run locally. Only the transcribed text is sent
+  to the AI, plus a photo if you explicitly ask Zeta to look at something.
+- 🔴 **Privacy mode means it.** The LED ring turns red; the wake word, walk-up wake, tap-to-talk and
+  camera stop. The robot remembers the setting through reboots. As a second, independent lock, the voice server refuses
+  audio and hangs up while privacy is on, so even a misbehaving device can't be heard.
+- 🧱 **An allow list on the device itself.** The robot checks its outbound connections (updates, voice, notification media, camera) against a host policy you control.
+- 🔑 **Keys you can't read back.** API keys and tokens live in the control panel as write-only
+  values on your server. They're never in git, never shown again, and never sent to the robot.
+
+The full audit trail lives in [`backend/README.md`](backend/README.md#privacy--network-audit-v02).
+
+## How it works
+
+```mermaid
+flowchart LR
+    Z["🤖 Zeta<br/>StackChan · CoreS3"]
+    subgraph Home["Your server (Docker)"]
+        V["Voice server<br/>xiaozhi-esp32-server"]
+        A["FunASR<br/>speech → text"]
+        P["Piper<br/>text → speech"]
+        B["Notify bridge<br/>+ control panel"]
+    end
+    HA["🏠 Home Assistant"]
+    AI["☁️ OpenAI<br/>(text only)"]
+
+    Z <-->|"voice (Opus)"| V
+    V --- A
+    V --- P
+    V <-->|"words"| AI
+    V <-->|"MCP tools"| HA
+    HA -->|"MQTT alerts"| B
+    B <-->|"notifications, settings"| Z
+```
+
+- **The robot** runs a fork of [m5stack/StackChan](https://github.com/m5stack/StackChan) with
+  [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) as its voice client. It's kept in
+  [`firmware/`](firmware/README.md) as one patch against a pinned upstream commit.
+- **The server** is a Docker Compose stack: the
+  [xiaozhi-esp32-server](https://github.com/xinnan-tech/xiaozhi-esp32-server) voice pipeline, a
+  Piper TTS sidecar, and a small notify bridge that relays Home Assistant alerts and hosts the
+  control panel.
+- **Home Assistant** stays where it is. Zeta reaches it through HA's own MCP Server integration
+  and an MQTT topic.
+
+Curious about the internals? [`docs/firmware-changes.md`](docs/firmware-changes.md) walks through
+every change, file by file.
+
+## Get started
+
+**You'll need:** an M5Stack StackChan kit (CoreS3 head), a Linux machine with Docker on your
+network, Home Assistant with an MQTT broker, and an OpenAI API key.
+
+1. **Start the server.** Follow [`backend/README.md`](backend/README.md#setup): copy the three
+   example configs, download the speech model, and run `docker compose up -d --build`.
+2. **Sign in to the control panel** at `http://<your-server>:8090`. The first-run password is in
+   `docker logs notify-bridge | grep password`. Paste your OpenAI key and Home Assistant token into
+   the **Keys** tab.
+3. **Build and flash Zeta.** Run `firmware/setup.sh`, set your server's IP in
+   `upstream/StackChan/firmware/sdkconfig.defaults.local`, then build and flash with Docker as in
+   [`docs/toolchain.md`](docs/toolchain.md). Take a [flash backup](backups/README.md) first.
+4. **Connect Home Assistant.** Enable the Model Context Protocol Server integration, and point
+   automations at the MQTT topic to send Zeta notifications (examples in
+   [`backend/README.md`](backend/README.md#triggering-notifications-from-home-assistant)).
+
+> [!NOTE]
+> On the CoreS3 used for development, any reset other than a full power-off leaves the robot in a
+> boot loop, including the reset after flashing. Hold the side button for about 6 seconds to power
+> off, then press it to start again. Details and other known issues:
+> [`backend/README.md`](backend/README.md#known-issues-v04).
+
+## What's next
+
+The v0.5 plan:
+
+- 🔌 **Fix the warm-reset boot loop**, so over-the-air updates are safe.
+- 🖥️ **Device logs over USB**, for proper on-device debugging.
+- 🧠 **A fully local brain:** a local LLM through Ollama, taking OpenAI out of the picture entirely.
+- 🔐 **A device credential** for the notification socket.
+- 🇬🇧 **English all the way down:** translating the remaining Chinese strings the robot can show,
+  say, log or send to the AI.
+- ✨ **Smaller touches:** Do Not Disturb that stays in sync, a head-touch privacy toggle, and viewing
+  and deleting Zeta's memories from the control panel.
+
+## Project layout
 
 ```
 StackZeta/
-├── backend/              Self-hosted voice/notification backend (Docker Compose) — see backend/README.md
-├── backups/              Full flash dump taken before flashing anything custom
-├── docs/                 Research notes: hardware, toolchain, architecture, references
-├── firmware/             The firmware, as a patch against a pinned m5stack/StackChan commit — see firmware/README.md
-└── upstream/StackChan/   (git-ignored) working firmware tree created by firmware/setup.sh
+├── backend/     The self-hosted server: voice pipeline, TTS, notify bridge and control panel
+├── firmware/    The robot's firmware, as a patch against m5stack/StackChan (+ setup scripts)
+├── docs/        Hardware, toolchain, visual design and implementation notes
+└── backups/     How to take and restore a full flash backup before flashing
 ```
 
-## Architecture
+## Credits
 
-The firmware is a light fork of [`m5stack/StackChan`](https://github.com/m5stack/StackChan) (ESP-IDF
-C++, bundles [`xiaozhi-esp32`](https://github.com/78/xiaozhi-esp32) as the voice client) — see
-[`docs/architecture-notes.md`](docs/architecture-notes.md) for how the upstream code is organized,
-and [`docs/toolchain.md`](docs/toolchain.md) for the build/flash flow. This repo carries the firmware
-as [`firmware/stackzeta-firmware.patch`](firmware/README.md) against a pinned upstream commit;
-`firmware/setup.sh` recreates the tree in `upstream/StackChan/`, and the paths below are relative
-to that tree. Firmware changes live in `firmware/main/`, with one deliberate exception: `firmware/patches/xiaozhi-esp32.patch` (applied by
-`fetch_repos.py`) carries small edits to the fetched `xiaozhi-esp32` dependency that cannot be made
-from outside it — see the last bullet below:
-
-- `firmware/sdkconfig.defaults` — `CONFIG_OTA_URL` and `CONFIG_NOTIFY_WS_URL` point at the
-  self-hosted backend instead of M5Stack's cloud; `CONFIG_STACKCHAN_SERVER_URL` overridden to an
-  inert value (defense-in-depth — see "Privacy" above).
-- `firmware/main/stackchan/notify/` — a small WebSocket client (independent of the voice
-  connection) for the notification feature; also fetches/plays notification images and audio
-  (writing PCM straight to the codec, not via the voice pipeline's decoder — see
-  `backend/README.md`), and holds the Do Not Disturb state.
-- `firmware/main/hal/board/stackchan_display.cc` — idle-sleep behavior, hooked into the existing
-  `SetStatus()` transitions.
-- `firmware/main/stackchan/modifiers/listening.h` — new ambient head-motion modifier for the
-  listening state; `speaking.h`'s equivalent already existed upstream, just shipped disabled.
-- `firmware/main/hal/board/audio_level.h` — live speaker-output level tracking, feeding an
-  audio-reactive mouth animation instead of the stock random one.
-- `firmware/main/hal/drivers/LTR553/` + `firmware/main/stackchan/proximity/` — proximity sensor
-  driver (no upstream equivalent existed) and the wake-on-approach task built on it.
-- `firmware/main/hal/hal_network.cpp` — SNTP restricted to `pool.ntp.org` only (upstream default
-  also queried a Chinese NTP pool on every boot, unconditionally).
-- `firmware/main/main.cpp`, `firmware/main/apps/app_setup/app_setup.cpp` — three M5Stack-cloud-only
-  apps and the Setup app's Account/unbind menu removed from the on-device launcher (see "Privacy").
-- `firmware/patches/xiaozhi-esp32.patch` — on top of upstream M5Stack's own edits: the privacy-mode
-  gate in `Application` (wake word, push-to-talk, chat toggle, and any transition into listening are
-  refused while privacy mode is on; the stock idle handler would otherwise re-enable the wake word),
-  network-policy checks on OTA, asset, WebSocket and MQTT URLs, and a raw-PCM playback entry point
-  used for the settings acknowledgement tone. Regenerate it with `git -C firmware/xiaozhi-esp32 diff`
-  after editing the fetched tree, or a fresh fetch will silently drop those changes.
-
-The backend ([`backend/`](backend/README.md)) is a Docker Compose stack on this machine:
-`xiaozhi-esp32-server` (voice/OTA, ASR/LLM/VLLM/TTS routing — all pointed at either local providers
-or OpenAI, see "Privacy" above), a `piper-tts` sidecar, and a small custom `notify-bridge` service
-(MQTT → device WebSocket relay for notifications, including synthesizing and resampling
-notification audio). A startup patch (`xiaozhi-server/overrides/patch_chinese_strings.py`) fixes
-hardcoded Chinese text and one outbound Chinese network call in core files too large to safely
-mirror as whole-file overrides. Home Assistant itself runs externally, reached via its own MCP
-Server integration.
-
-The community project [BrettKinny/dotty-stackchan](https://github.com/BrettKinny/dotty-stackchan)
-(same upstream, self-hosted voice backend) was useful reference material during planning — see
-[`docs/references.md`](docs/references.md) — but wasn't cloned or built on directly.
-
-## Roadmap: v0.5
-
-1. **Warm-reset boot loop** — find why any non-power-on reset fails PSRAM init; it would strand the
-   device after an OTA update.
-2. **Device logs over USB** — a debug build that leaves the USB port to the console, to resolve the
-   unexplained device behaviour (missing `device_event` frames, `listen stop` on privacy-on).
-3. **Local LLM** — Ollama on the host GPU (RTX 4070), removing OpenAI as the last external service;
-   memory summaries move with it, and the summarizer prompt is rewritten in English.
-4. **Device credential for the notify socket** — the control panel has sign-in, host and origin
-   checks since v0.4, but the device's `/ws` is still open to any LAN client.
-5. **English-only firmware text** — translate every Chinese or other non-English string that can
-   reach the LLM, screen, speaker or logs (found so far: the press-to-talk MCP tool description,
-   which is sent to the LLM; five Ogg demuxer log messages; one NT26 board string), and all comments
-   in our own `firmware/main/` (~545 lines). Comments inside fetched dependencies (xiaozhi core,
-   mooncake, smooth_ui_toolkit; ~2,500 lines) stay as-is: comments can't contact anything, and an
-   audit of the built binary's URLs/hosts (see `docs/toolchain.md`) found no unauthorised
-   endpoints behind them.
-6. Smaller items — DND sync between voice and the control panel, a head-touch privacy toggle, and
-   viewing/deleting stored memories from the panel.
+Built on the shoulders of [M5Stack StackChan](https://github.com/m5stack/StackChan) (MIT),
+[xiaozhi-esp32](https://github.com/78/xiaozhi-esp32),
+[xiaozhi-esp32-server](https://github.com/xinnan-tech/xiaozhi-esp32-server),
+[Piper](https://github.com/rhasspy/piper) and [FunASR](https://github.com/modelscope/FunASR).
+[BrettKinny/dotty-stackchan](https://github.com/BrettKinny/dotty-stackchan), another self-hosted
+StackChan project, was a helpful reference during planning.
