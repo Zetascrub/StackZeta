@@ -78,7 +78,8 @@ StackZeta/
 ├── backend/              Self-hosted voice/notification backend (Docker Compose) — see backend/README.md
 ├── backups/              Full flash dump taken before flashing anything custom
 ├── docs/                 Research notes: hardware, toolchain, architecture, references
-└── upstream/StackChan/   Clone of m5stack/StackChan, on branch `stackzeta-v0.1` — the firmware fork
+├── firmware/             The firmware, as a patch against a pinned m5stack/StackChan commit — see firmware/README.md
+└── upstream/StackChan/   (git-ignored) working firmware tree created by firmware/setup.sh
 ```
 
 ## Architecture
@@ -86,8 +87,10 @@ StackZeta/
 The firmware is a light fork of [`m5stack/StackChan`](https://github.com/m5stack/StackChan) (ESP-IDF
 C++, bundles [`xiaozhi-esp32`](https://github.com/78/xiaozhi-esp32) as the voice client) — see
 [`docs/architecture-notes.md`](docs/architecture-notes.md) for how the upstream code is organized,
-and [`docs/toolchain.md`](docs/toolchain.md) for the build/flash flow. Firmware changes live in
-`firmware/main/`, with one deliberate exception: `firmware/patches/xiaozhi-esp32.patch` (applied by
+and [`docs/toolchain.md`](docs/toolchain.md) for the build/flash flow. This repo carries the firmware
+as [`firmware/stackzeta-firmware.patch`](firmware/README.md) against a pinned upstream commit;
+`firmware/setup.sh` recreates the tree in `upstream/StackChan/`, and the paths below are relative
+to that tree. Firmware changes live in `firmware/main/`, with one deliberate exception: `firmware/patches/xiaozhi-esp32.patch` (applied by
 `fetch_repos.py`) carries small edits to the fetched `xiaozhi-esp32` dependency that cannot be made
 from outside it — see the last bullet below:
 

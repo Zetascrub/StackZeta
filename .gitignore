@@ -1,8 +1,8 @@
 # Firmware flash dumps (large binaries, keep on disk, keep out of git history)
 backups/*.bin
 
-# upstream/StackChan is its own git clone (has its own .git/) — not tracked as part of
-# this repo's history. Fork it separately once the customization plan is settled.
+# upstream/StackChan is the working firmware tree created by firmware/setup.sh (its own
+# git clone); this repo tracks the firmware as firmware/stackzeta-firmware.patch instead.
 upstream/
 
 # Backend secrets and large model/voice files — never commit these.

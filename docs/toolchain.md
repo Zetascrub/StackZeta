@@ -22,6 +22,11 @@ reflected in `sdkconfig.defaults`:
 From the repo root:
 
 ```bash
+# Create the firmware tree (clones m5stack/StackChan at the pinned commit and
+# applies firmware/stackzeta-firmware.patch), then set your server's LAN IP in
+# upstream/StackChan/firmware/sdkconfig.defaults.local
+firmware/setup.sh
+
 # Fetch pinned dependencies (mooncake UI lib, xiaozhi-esp32, ArduinoJson, esp-now, ...)
 docker run --rm -it -v "$PWD/upstream/StackChan":/project -w /project/firmware \
   espressif/idf:v5.5.4 \
