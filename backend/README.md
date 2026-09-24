@@ -157,7 +157,8 @@ current voice turn and discards any buffered assistant speech before announcing 
 cp xiaozhi-server/data/.config.yaml.example xiaozhi-server/data/.config.yaml
 cp xiaozhi-server/data/.mcp_server_settings.json.example xiaozhi-server/data/.mcp_server_settings.json
 cp .env.example .env
-# edit all three: OpenAI API key, HA long-lived access token, MQTT credentials, this machine's LAN IP
+# edit all three: this machine's LAN IP, Home Assistant's address and MQTT host. API keys and
+# tokens can go in these files too, or be pasted into the control panel's Keys tab later.
 
 mkdir -p xiaozhi-server/models/SenseVoiceSmall
 curl -L -o xiaozhi-server/models/SenseVoiceSmall/model.pt \
