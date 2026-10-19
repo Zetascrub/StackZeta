@@ -40,7 +40,12 @@ def privacy_active() -> bool:
             _active = bool(config.get("device", {}).get("privacy_mode", False))
             _mtime = mtime
     except (OSError, ValueError):
-        pass
+        # Fail closed when the state file exists but can't be read or parsed:
+        # a corrupt file must not silently disable privacy enforcement. A
+        # genuinely absent file (fresh install, privacy never set) keeps the
+        # last value, which starts off.
+        if os.path.exists(STATE_PATH):
+            _active = True
     return _active
 
 

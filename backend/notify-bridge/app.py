@@ -16,6 +16,7 @@ import io
 import json
 import logging
 import os
+import re
 import uuid
 import ipaddress
 from copy import deepcopy
@@ -30,6 +31,7 @@ from aiohttp import web
 from PIL import Image
 
 from panel_security import PanelSecurity
+from device_controls import apply_device_controls
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("notify-bridge")
@@ -44,6 +46,7 @@ LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "8090"))
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", f"http://localhost:{LISTEN_PORT}")
 
 IMAGE_MAX_SIZE = (320, 240)
+IMAGE_MAX_BYTES = 8 * 1024 * 1024  # before resize; the device screen is tiny
 IMAGES_DIR = Path(os.environ.get("IMAGES_DIR", "/data/images"))
 IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 MAX_STORED_IMAGES = 50
@@ -154,7 +157,9 @@ history: list[dict] = _load_json(HISTORY_PATH, [])
 
 
 def _public_config() -> dict:
-    return deepcopy(config)
+    result = deepcopy(config)
+    result.pop("_device_receipts", None)
+    return result
 
 
 def _validate_config(candidate: dict) -> dict:
@@ -205,6 +210,15 @@ def _validate_config(candidate: dict) -> dict:
         if not isinstance(color, str) or len(color) != 7 or not color.startswith("#"):
             raise ValueError(f"LED color {name} must use #RRGGBB")
         int(color[1:], 16)
+
+    notifications = merged["notifications"]
+    for flag in ("dnd", "quiet_hours_enabled"):
+        notifications[flag] = bool(notifications.get(flag))
+    for key in ("quiet_start", "quiet_end"):
+        # Compared lexicographically in _is_quiet_hours, so a non-HH:MM value
+        # would raise there and silently drop every notification.
+        if not re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", str(notifications.get(key, ""))):
+            raise ValueError(f"notifications.{key} must be HH:MM")
     return merged
 
 
@@ -309,7 +323,11 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
             except json.JSONDecodeError:
                 log.info("ignoring non-JSON device frame: %r", str(msg.data)[:120])
                 continue
-            if payload.get("type") == "notification_ack":
+            if not isinstance(payload, dict) or hub.ws is not ws:
+                continue
+            if payload.get("type") == "settings_update":
+                await device_settings_update(payload)
+            elif payload.get("type") == "notification_ack":
                 notification_id = str(payload.get("id", ""))
                 for item in history:
                     if item.get("id") == notification_id:
@@ -326,6 +344,24 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
     finally:
         hub.unregister(ws)
     return ws
+
+
+async def device_settings_update(payload: dict) -> None:
+    global config
+    try:
+        updated, receipts = apply_device_controls(
+            config, payload, config.get("_device_receipts", [])
+        )
+        updated["_device_receipts"] = receipts
+        _atomic_write_json(CONFIG_PATH, updated)
+        config = updated
+    except (ValueError, TypeError) as exc:
+        log.warning("rejected device settings update: %s", exc)
+        return
+    # Echo the accepted id with the current snapshot. The device keeps newer
+    # local edits pending until their own acknowledgement arrives.
+    await hub.send({"type": "settings", "settings": _public_config(),
+                    "accepted_update": payload["id"]})
 
 
 def _prune_old_images() -> None:
@@ -353,7 +389,12 @@ async def fetch_and_prepare_image(url: str) -> str | None:
                 url, headers=headers, timeout=aiohttp.ClientTimeout(total=10), allow_redirects=False
             ) as resp:
                 resp.raise_for_status()
-                raw = await resp.read()
+                raw = bytearray()
+                async for chunk in resp.content.iter_chunked(65536):
+                    raw += chunk
+                    if len(raw) > IMAGE_MAX_BYTES:
+                        log.warning("notification image too large, dropped: %s", url)
+                        return None
     except Exception:
         log.exception("failed to fetch notification image: %s", url)
         return None
@@ -484,10 +525,12 @@ async def config_put_handler(request: web.Request) -> web.Response:
         candidate = await request.json()
         if not isinstance(candidate, dict):
             raise ValueError("configuration must be an object")
-        config = _validate_config(candidate)
+        candidate.pop("_device_receipts", None)
+        updated = _validate_config(_deep_merge(config, candidate))
     except (ValueError, TypeError, json.JSONDecodeError) as exc:
         raise web.HTTPBadRequest(text=str(exc)) from exc
-    _atomic_write_json(CONFIG_PATH, config)
+    _atomic_write_json(CONFIG_PATH, updated)
+    config = updated
     await hub.send_settings(acknowledge=True)
     return web.json_response(_public_config())
 
@@ -515,7 +558,7 @@ async def import_home_assistant_handler(request: web.Request) -> web.Response:
     location["latitude"] = ha_config.get("latitude")
     location["longitude"] = ha_config.get("longitude")
     location["timezone"] = str(ha_config.get("time_zone") or location["timezone"])
-    config = _validate_config(candidate)
+    config = _validate_config(_deep_merge(config, candidate))
     _atomic_write_json(CONFIG_PATH, config)
     await hub.send_settings(acknowledge=True)
     return web.json_response(_public_config())
