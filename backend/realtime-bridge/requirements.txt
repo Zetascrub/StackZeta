@@ -1,0 +1,3 @@
+aiohttp==3.13.2
+opuslib_next==1.1.5
+PyYAML==6.0.3

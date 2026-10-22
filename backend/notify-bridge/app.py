@@ -12,6 +12,7 @@ firmware — so this service is a thin, stateless-per-notification relay.
 """
 
 import asyncio
+import hmac
 import io
 import json
 import logging
@@ -44,6 +45,11 @@ HA_BASE_URL = os.environ.get("HA_BASE_URL", "").rstrip("/")
 
 LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "8090"))
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", f"http://localhost:{LISTEN_PORT}")
+
+# Shared secret the device sends as "Authorization: Bearer <token>" on /ws.
+# Must match the firmware's CONFIG_NOTIFY_WS_TOKEN. When empty, /ws stays open
+# to any LAN client (backward compatible); set it to lock the socket down.
+NOTIFY_WS_TOKEN = os.environ.get("NOTIFY_WS_TOKEN", "")
 
 IMAGE_MAX_SIZE = (320, 240)
 IMAGE_MAX_BYTES = 8 * 1024 * 1024  # before resize; the device screen is tiny
@@ -309,6 +315,11 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
     # {"type":"ping"} application-level keepalive instead, which it also
     # uses to actively detect a dead connection (rather than relying on
     # TCP/WS-layer close detection, which was unreliable in practice).
+    if NOTIFY_WS_TOKEN and not hmac.compare_digest(
+        request.headers.get("Authorization", ""), f"Bearer {NOTIFY_WS_TOKEN}"
+    ):
+        log.warning("rejected notify websocket: bad or missing device token (peer=%s)", request.remote)
+        raise web.HTTPUnauthorized()
     ws = web.WebSocketResponse()
     await ws.prepare(request)
     log.info("device websocket peer=%s", request.remote)

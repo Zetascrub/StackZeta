@@ -11,7 +11,7 @@ index 5c0083c..2aa700a 100644
  
  xiaozhi-esp32/
 diff --git a/firmware/CMakeLists.txt b/firmware/CMakeLists.txt
-index 1733075..220c435 100644
+index 1733075..1f0395c 100644
 --- a/firmware/CMakeLists.txt
 +++ b/firmware/CMakeLists.txt
 @@ -2,7 +2,7 @@
@@ -19,7 +19,7 @@ index 1733075..220c435 100644
  cmake_minimum_required(VERSION 3.16)
  
 -set(PROJECT_VER "1.5.1")
-+set(PROJECT_VER "0.4.0")
++set(PROJECT_VER "0.5.0")
  add_definitions(-DFIRMWARE_VERSION=\"${PROJECT_VER}\")
  
  # Add this line to disable the specific warning
@@ -88,6 +88,193 @@ index eb14452..a96bb59 100644
          {
              "Firmware",
              {
+diff --git a/firmware/main/apps/common/quick_controls/quick_controls.cpp b/firmware/main/apps/common/quick_controls/quick_controls.cpp
+new file mode 100644
+index 0000000..cd24858
+--- /dev/null
++++ b/firmware/main/apps/common/quick_controls/quick_controls.cpp
+@@ -0,0 +1,169 @@
++#include "quick_controls.h"
++#include <lvgl.h>
++#include <hal/hal.h>
++#include <hal/board/stackchan_display.h>
++#include <stackchan/notify/notify_client.h>
++#include <algorithm>
++#include <cstdio>
++
++namespace view {
++namespace {
++using stackchan::controls::Control;
++using stackchan::controls::modeText;
++constexpr uint32_t kBackground = 0x03131D, kCard = 0x102C3A, kText = 0xF4F0E4;
++constexpr uint32_t kAccent = 0x00E5F0, kMuted = 0xA1B8C5, kAmber = 0xFFAA24;
++lv_obj_t *bar = nullptr, *sheet = nullptr, *status = nullptr, *sync_status = nullptr;
++lv_obj_t *volume = nullptr, *brightness = nullptr, *volume_text = nullptr, *brightness_text = nullptr;
++lv_obj_t *privacy = nullptr, *dnd = nullptr, *profiles[3] = {};
++bool open = false, tracking = false, down = false;
++uint32_t suppress_until = 0, last_refresh = 0;
++
++lv_obj_t* label(lv_obj_t* parent, const char* text, int x, int y, int width, uint32_t color = kText) {
++    auto obj = lv_label_create(parent);
++    lv_label_set_text(obj, text);
++    lv_obj_set_pos(obj, x, y);
++    lv_obj_set_width(obj, width);
++    lv_label_set_long_mode(obj, LV_LABEL_LONG_CLIP);
++    lv_obj_set_style_text_font(obj, &lv_font_montserrat_14, 0);
++    lv_obj_set_style_text_color(obj, lv_color_hex(color), 0);
++    return obj;
++}
++
++void show(bool visible) {
++    open = visible;
++    suppress_until = GetHAL().millis() + 400;
++    notify::NotifyClient::GetInstance().SetControlsOpen(open);
++    if (open) {
++        WakeFromIdleSleep();
++        lv_obj_remove_flag(sheet, LV_OBJ_FLAG_HIDDEN);
++        lv_obj_move_foreground(sheet);
++    } else lv_obj_add_flag(sheet, LV_OBJ_FLAG_HIDDEN);
++}
++
++lv_obj_t* button(lv_obj_t* parent, const char* text, int x, int y, int width,
++                 lv_event_cb_t action, void* data = nullptr, int height = 34) {
++    auto obj = lv_button_create(parent);
++    lv_obj_set_pos(obj, x, y); lv_obj_set_size(obj, width, height);
++    lv_obj_set_style_bg_color(obj, lv_color_hex(kCard), 0);
++    lv_obj_set_style_radius(obj, 9, 0);
++    lv_obj_set_style_shadow_width(obj, 0, 0);
++    lv_obj_set_style_border_width(obj, 1, 0);
++    lv_obj_set_style_border_color(obj, lv_color_hex(0x285062), 0);
++    lv_obj_set_style_pad_all(obj, 0, 0);
++    auto text_obj = label(obj, text, 0, 0, width);
++    lv_obj_set_style_text_align(text_obj, LV_TEXT_ALIGN_CENTER, 0);
++    lv_obj_center(text_obj);
++    lv_obj_add_event_cb(obj, action, LV_EVENT_CLICKED, data);
++    return obj;
++}
++void selected(lv_obj_t* obj, bool active, uint32_t accent = kAccent) {
++    lv_obj_set_style_bg_color(obj, lv_color_hex(active ? accent : kCard), 0);
++    lv_obj_set_style_text_color(lv_obj_get_child(obj, 0), lv_color_hex(active ? kBackground : kText), 0);
++}
++
++void slider_event(lv_event_t* event) {
++    auto slider = static_cast<lv_obj_t*>(lv_event_get_target(event));
++    const bool is_volume = slider == volume;
++    int value = lv_slider_get_value(slider);
++    char text[28]; snprintf(text, sizeof(text), "%s %d%%", is_volume ? "Volume" : "Light", value);
++    lv_label_set_text(is_volume ? volume_text : brightness_text, text);
++    // Commit on release rather than writing flash on every drag sample.
++    if (lv_event_get_code(event) == LV_EVENT_RELEASED)
++        notify::NotifyClient::GetInstance().SetControl(is_volume ? Control::Volume : Control::Brightness, value);
++}
++
++lv_obj_t* slider(lv_obj_t* parent, int y, int minimum) {
++    auto obj = lv_slider_create(parent);
++    lv_obj_set_pos(obj, 129, y); lv_obj_set_size(obj, 165, 8);
++    lv_slider_set_range(obj, minimum, 100);
++    lv_obj_set_style_bg_color(obj, lv_color_hex(kCard), LV_PART_MAIN);
++    lv_obj_set_style_bg_color(obj, lv_color_hex(kAccent), LV_PART_INDICATOR);
++    lv_obj_set_style_bg_color(obj, lv_color_hex(kText), LV_PART_KNOB);
++    lv_obj_set_style_pad_all(obj, 8, LV_PART_KNOB);
++    lv_obj_set_ext_click_area(obj, 14);
++    lv_obj_add_event_cb(obj, slider_event, LV_EVENT_VALUE_CHANGED, nullptr);
++    lv_obj_add_event_cb(obj, slider_event, LV_EVENT_RELEASED, nullptr);
++    return obj;
++}
++}
++
++void create_quick_controls() {
++    if (bar) return;
++    bar = lv_obj_create(lv_layer_top());
++    lv_obj_set_pos(bar, 0, 0); lv_obj_set_size(bar, 320, 28);
++    lv_obj_set_style_pad_all(bar, 0, 0); lv_obj_set_style_border_width(bar, 0, 0);
++    lv_obj_set_style_radius(bar, 0, 0); lv_obj_set_style_bg_color(bar, lv_color_hex(kBackground), 0);
++    lv_obj_remove_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
++    status = label(bar, "Ready", 8, 6, 224, kAccent);
++    button(bar, "Controls", 234, 0, 86, [](lv_event_t*) { show(true); }, nullptr, 28);
++
++    sheet = lv_obj_create(lv_layer_top());
++    lv_obj_set_size(sheet, 320, 240); lv_obj_set_pos(sheet, 0, 0);
++    lv_obj_remove_flag(sheet, LV_OBJ_FLAG_SCROLLABLE);
++    lv_obj_set_style_pad_all(sheet, 0, 0); lv_obj_set_style_radius(sheet, 0, 0);
++    lv_obj_set_style_border_width(sheet, 0, 0);
++    lv_obj_set_style_bg_color(sheet, lv_color_hex(kBackground), 0);
++    label(sheet, "Zeta / quick controls", 12, 10, 246, kAccent);
++    button(sheet, LV_SYMBOL_CLOSE, 276, 4, 34, [](lv_event_t*) { show(false); }, nullptr, 30);
++    volume_text = label(sheet, "Volume", 12, 49, 115);
++    brightness_text = label(sheet, "Light", 12, 85, 115);
++    volume = slider(sheet, 55, 0); brightness = slider(sheet, 91, 5);
++    privacy = button(sheet, "Privacy", 12, 114, 144, [](lv_event_t*) {
++        auto& client = notify::NotifyClient::GetInstance();
++        client.SetControl(Control::Privacy, !client.GetPrivacyMode());
++    });
++    dnd = button(sheet, "Do not disturb", 164, 114, 144, [](lv_event_t*) {
++        auto& client = notify::NotifyClient::GetInstance(); client.SetDoNotDisturb(!client.GetDoNotDisturb());
++    });
++    const char* names[] = {"Quiet", "Balanced", "Lively"};
++    for (int i = 0; i < 3; ++i) profiles[i] = button(sheet, names[i], 12 + i * 100, 157, 96,
++        [](lv_event_t* e) { notify::NotifyClient::GetInstance().SetControl(Control::Activity,
++                           static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)))); },
++        reinterpret_cast<void*>(static_cast<intptr_t>(i)));
++    sync_status = label(sheet, "", 12, 200, 298, kMuted);
++    label(sheet, "Hold head: privacy   /   Tap: stop", 12, 220, 298, kMuted);
++    lv_obj_add_flag(sheet, LV_OBJ_FLAG_HIDDEN);
++}
++
++bool quick_controls_block_touch() {
++    return open || tracking || static_cast<int32_t>(suppress_until - GetHAL().millis()) > 0;
++}
++
++void update_quick_controls() {
++    if (!bar) return;
++    auto& client = notify::NotifyClient::GetInstance();
++    auto indev = GetHAL().lvTouchpad;
++    bool pressed = lv_indev_get_state(indev) == LV_INDEV_STATE_PR;
++    lv_point_t point; lv_indev_get_point(indev, &point);
++    if (pressed && !down) {
++        tracking = point.y < 28;
++        client.UserActivity();
++    }
++    if (pressed && tracking && point.y > 65) { show(true); tracking = false; }
++    if (!pressed && down) { if (tracking) suppress_until = GetHAL().millis() + 400; tracking = false; }
++    down = pressed;
++    if (GetHAL().millis() - last_refresh < 150) return;
++    last_refresh = GetHAL().millis();
++    auto values = client.GetControls();
++    auto mode = client.GetMode();
++    lv_label_set_text(status, modeText(mode));
++    lv_obj_set_style_text_color(status, lv_color_hex(client.GetPrivacyMode() ? 0xFF5A36 : kAccent), 0);
++    if (!open) return;
++    WakeFromIdleSleep();
++    if (!lv_obj_has_state(volume, LV_STATE_PRESSED)) {
++        int value = values.get(Control::Volume); lv_slider_set_value(volume, value, LV_ANIM_OFF);
++        lv_label_set_text_fmt(volume_text, "Volume %d%%", value);
++    }
++    if (!lv_obj_has_state(brightness, LV_STATE_PRESSED)) {
++        int value = values.get(Control::Brightness); lv_slider_set_value(brightness, value, LV_ANIM_OFF);
++        lv_label_set_text_fmt(brightness_text, "Light %d%%", value);
++    }
++    selected(privacy, client.GetPrivacyMode(), 0xFF5A36);
++    selected(dnd, client.GetDoNotDisturb(), 0xB299FF);
++    for (int i = 0; i < 3; ++i) selected(profiles[i], values.get(Control::Activity) == i);
++    const char* sync = !client.IsConnected() ? "Offline - changes saved on Zeta" :
++                       client.HasPendingSettings() ? "Saving changes..." : "Connected - settings synced";
++    lv_label_set_text(sync_status, sync);
++    lv_obj_set_style_text_color(sync_status, lv_color_hex(client.HasPendingSettings() ? kAmber : kMuted), 0);
++}
++}
+diff --git a/firmware/main/apps/common/quick_controls/quick_controls.h b/firmware/main/apps/common/quick_controls/quick_controls.h
+new file mode 100644
+index 0000000..1781ed7
+--- /dev/null
++++ b/firmware/main/apps/common/quick_controls/quick_controls.h
+@@ -0,0 +1,6 @@
++#pragma once
++namespace view {
++void create_quick_controls();
++void update_quick_controls();
++bool quick_controls_block_touch();
++}
 diff --git a/firmware/main/assets/assets_bin/icon_stackzeta.png b/firmware/main/assets/assets_bin/icon_stackzeta.png
 new file mode 100644
 index 0000000000000000000000000000000000000000..dca50624f5f242ef64f893f1be5b4064e2eb3119
@@ -3320,10 +3507,19 @@ index 5ae1912..2e9eadd 100644
      size_t remain_stack_size = uxTaskGetStackHighWaterMark(nullptr);
      ESP_LOGI(TAG, "Explain image size=%d bytes, compressed size=%d, remain stack size=%d, question=%s\n%s",
 diff --git a/firmware/main/hal/board/stackchan_display.cc b/firmware/main/hal/board/stackchan_display.cc
-index 7459888..ca72cbd 100644
+index 7459888..52c3cf3 100644
 --- a/firmware/main/hal/board/stackchan_display.cc
 +++ b/firmware/main/hal/board/stackchan_display.cc
-@@ -15,6 +15,7 @@
+@@ -4,6 +4,8 @@
+  * SPDX-License-Identifier: MIT
+  */
+ #include "stackchan_display.h"
++#include <apps/common/quick_controls/quick_controls.h>
++#include <application.h>
+ #include <esp_log.h>
+ #include <esp_err.h>
+ #include <esp_lvgl_port.h>
+@@ -15,6 +17,7 @@
  #include <lvgl.h>
  #include <lvgl_theme.h>
  #include <stackchan/stackchan.h>
@@ -3331,7 +3527,7 @@ index 7459888..ca72cbd 100644
  #include <assets/lang_config.h>
  #include <hal/hal.h>
  
-@@ -64,9 +65,26 @@ void StackChanAvatarDisplay::InitializeLcdThemes()
+@@ -64,9 +67,26 @@ void StackChanAvatarDisplay::InitializeLcdThemes()
      dark_theme->set_icon_font(icon_font);
      dark_theme->set_large_icon_font(large_icon_font);
  
@@ -3358,7 +3554,7 @@ index 7459888..ca72cbd 100644
  }
  
  StackChanAvatarDisplay::StackChanAvatarDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
-@@ -82,7 +100,7 @@ StackChanAvatarDisplay::StackChanAvatarDisplay(esp_lcd_panel_io_handle_t panel_i
+@@ -82,7 +102,7 @@ StackChanAvatarDisplay::StackChanAvatarDisplay(esp_lcd_panel_io_handle_t panel_i
  
      // Load theme from settings
      Settings settings("display", false);
@@ -3367,7 +3563,7 @@ index 7459888..ca72cbd 100644
      current_theme_         = LvglThemeManager::GetInstance().GetTheme(theme_name);
  
      // Draw white screen
-@@ -252,6 +270,8 @@ void StackChanAvatarDisplay::SetupUI()
+@@ -252,15 +272,18 @@ void StackChanAvatarDisplay::SetupUI()
      ESP_LOGI(TAG, "Creating Stack-chan Avatar...");
  
      auto avatar = std::make_unique<DefaultAvatar>();
@@ -3375,8 +3571,10 @@ index 7459888..ca72cbd 100644
 +    avatar->secondaryColor = lv_color_hex(0x03131D);
      avatar->init(lv_screen_active());
      avatar->getPanel()->onClick().connect([]() {
++        if (view::quick_controls_block_touch()) return;
          static uint32_t last_toggle_tick = 0;
-@@ -260,7 +280,7 @@ void StackChanAvatarDisplay::SetupUI()
+         const uint32_t now               = GetHAL().millis();
+         if (last_toggle_tick != 0 && now - last_toggle_tick < 2000) {
              return;
          }
  
@@ -3385,22 +3583,52 @@ index 7459888..ca72cbd 100644
              last_toggle_tick = now;
              hal_bridge::toggle_xiaozhi_chat_state();
          }
-@@ -503,6 +523,14 @@ void StackChanAvatarDisplay::SetStatus(const char* status)
+@@ -332,6 +355,13 @@ void StackChanAvatarDisplay::SetEmotion(const char* emotion)
+ 
+     auto& avatar = stackchan.avatar();
+ 
++    if (notify::NotifyClient::GetInstance().GetPrivacyMode()) {
++        avatar.setEmotion(Emotion::Sleepy);
++        auto blink = static_cast<BlinkModifier*>(stackchan.getModifier(blink_modifier_id_));
++        if (blink) blink->resyncEyeWeights();
++        return;
++    }
++
+     // Map emotion string to stackchan::Emotion
+     if (strcmp(emotion, "neutral") == 0) {
+         avatar.setEmotion(Emotion::Neutral);
+@@ -492,8 +522,10 @@ void StackChanAvatarDisplay::SetStatus(const char* status)
+ 
+     DisplayLockGuard lock(this);
+ 
+-    bool is_idle      = false;
+-    bool is_listening = false;
++    bool is_idle = false;
++    auto& controls = notify::NotifyClient::GetInstance();
++    const bool allow_head_motion = controls.GetControls().get(stackchan::controls::Control::Activity) != 0 &&
++                                   !controls.GetPrivacyMode() && !controls.GetDoNotDisturb() && !controls.ControlsOpen();
+ 
+     if (strcmp(status, Lang::Strings::LISTENING) == 0) {
+         if (speaking_modifier_id_ >= 0) {
+@@ -503,8 +535,15 @@ void StackChanAvatarDisplay::SetStatus(const char* status)
              speaking_modifier_id_ = -1;
          }
  
+-        GetHAL().setRgbColor(0, 0, 50, 0);
+-        GetHAL().refreshRgb();
 +        // StackZeta: same subtle-motion treatment as speaking, while
 +        // actively listening.
-+        if (listening_motion_modifier_id_ < 0) {
++        if (allow_head_motion && listening_motion_modifier_id_ < 0) {
 +            listening_motion_modifier_id_ = stackchan.addModifier(std::make_unique<ListeningMotionModifier>());
 +        }
 +
 +        WakeFromIdleSleep();
 +
-         GetHAL().setRgbColor(0, 0, 50, 0);
-         GetHAL().refreshRgb();
++
  
-@@ -516,14 +544,30 @@ void StackChanAvatarDisplay::SetStatus(const char* status)
+     } else if (strcmp(status, Lang::Strings::STANDBY) == 0) {
+         _is_xiaozhi_ready = true;
+@@ -516,33 +555,64 @@ void StackChanAvatarDisplay::SetStatus(const char* status)
              speaking_modifier_id_ = -1;
          }
  
@@ -3411,8 +3639,9 @@ index 7459888..ca72cbd 100644
 +
          is_idle = true;
  
-         GetHAL().setRgbColor(0, 0, 0, 0);
-         GetHAL().refreshRgb();
+-        GetHAL().setRgbColor(0, 0, 0, 0);
+-        GetHAL().refreshRgb();
++
  
      } else if (strcmp(status, Lang::Strings::SPEAKING) == 0) {
 +        if (listening_motion_modifier_id_ >= 0) {
@@ -3428,11 +3657,14 @@ index 7459888..ca72cbd 100644
 +            // StackZeta: sampling the live audio level at 80ms (down from
 +            // the stock 180ms) so the mouth tracks speech more responsively
 +            // now that it's driven by real audio, not random alternation.
-+            speaking_modifier_id_ = stackchan.addModifier(std::make_unique<SpeakingModifier>(0, 80, true));
++            speaking_modifier_id_ = stackchan.addModifier(std::make_unique<SpeakingModifier>(0, 80, allow_head_motion));
          }
  
-         GetHAL().setRgbColor(0, 0, 0, 50);
-@@ -533,16 +577,33 @@ void StackChanAvatarDisplay::SetStatus(const char* status)
+-        GetHAL().setRgbColor(0, 0, 0, 50);
+-        GetHAL().refreshRgb();
++
+     } else {
+         avatar.setSpeech(status);
      }
  
      if (is_idle) {
@@ -3443,7 +3675,7 @@ index 7459888..ca72cbd 100644
 +        _is_xiaozhi_idle = true;
 +        idle_motion_level_ = GetHAL().getXiaozhiConfig().idleRandomMovementLevel;
 +
-+        if (idle_motion_level_ == 0) {
++        if (!allow_head_motion) {
 +            // Quiet profile: settle immediately and blank the screen after
 +            // the short standby debounce. The sleepy expression remains
 +            // visible during that transition instead of cutting abruptly
@@ -3457,8 +3689,8 @@ index 7459888..ca72cbd 100644
 +            motion.pitchServo().moveWithSpeed(200, 350);
 +            motion.yawServo().moveWithSpeed(0, 350);
 +            avatar.setEmotion(Emotion::Sleepy);
-+            avatar.setSpeech("Zzz...");
-+            EnterIdleSleep();
++            if (!controls.ControlsOpen() && !controls.GetPrivacyMode()) EnterIdleSleep();
++            else WakeFromIdleSleep();
 +        } else {
 +            // Balanced/lively profiles retain ambient expressions and head
 +            // movement until the board's configured power-save timeout.
@@ -3473,7 +3705,52 @@ index 7459888..ca72cbd 100644
      } else {
          // Stop idle motion
          ESP_LOGW(TAG, "Stop idle motion");
-@@ -571,3 +632,78 @@ void StackChanAvatarDisplay::SetStatus(const char* status)
+@@ -565,9 +635,125 @@ void StackChanAvatarDisplay::SetStatus(const char* status)
+     // Clear sleep state
+     if (is_sleeping_) {
+         avatar.setSpeech("");
++        is_sleeping_ = false;
++    }
++}
++
++// Called by the avatar/UI task under its LVGL lock. One policy selects the
++// face, head activity and status; the notification task uses the same mode
++// for the LEDs. Network disconnects never disable local controls.
++void StackChanAvatarDisplay::UpdateCompanionState()
++{
++    using namespace stackchan::controls;
++    auto& controls = notify::NotifyClient::GetInstance();
++    auto mode = controls.GetMode();
++    int signature = static_cast<int>(mode) * 16 + controls.GetControls().get(Control::Activity) * 2 +
++                    controls.ControlsOpen();
++    if (signature == companion_signature_) return;
++    companion_signature_ = signature;
++    auto& robot = GetStackChan();
++    if (!robot.hasAvatar()) return;
++    // Recreate motion modifiers when a profile/override changes mid-sentence.
++    for (int* id : {&speaking_modifier_id_, &listening_motion_modifier_id_,
++                    &idle_motion_modifier_id_, &idle_expression_modifier_id_}) {
++        if (*id >= 0) robot.removeModifier(*id);
++        *id = -1;
++    }
++    robot.avatar().mouth().setWeight(0);
++    if (mode == Mode::Standby) return;
++    auto state = Application::GetInstance().GetDeviceState();
++    SetStatus(state == kDeviceStateSpeaking ? Lang::Strings::SPEAKING :
++              state == kDeviceStateListening ? Lang::Strings::LISTENING :
++              state == kDeviceStateConnecting ? "Connecting" : Lang::Strings::STANDBY);
++    // Keep server-provided emotions during speech and petting between transitions.
++    if (mode == Mode::Privacy) {
++        robot.avatar().setEmotion(Emotion::Sleepy);
++        auto blink = static_cast<BlinkModifier*>(robot.getModifier(blink_modifier_id_));
++        if (blink) blink->resyncEyeWeights();
+     }
++    else if (mode == Mode::Connecting) SetEmotion("doubtful");
++    else if (mode == Mode::Notification) SetEmotion("happy");
++    else if (mode == Mode::Listening || mode == Mode::Idle || mode == Mode::Offline || mode == Mode::Dnd)
++        SetEmotion("neutral");
+ }
+ 
  void StackChanAvatarDisplay::ShowNotification(const char* notification, int duration_ms)
  {
  }
@@ -3482,16 +3759,18 @@ index 7459888..ca72cbd 100644
 +{
 +    auto& stackchan = GetStackChan();
 +    DisplayLockGuard lock(this);
-+    if (idle_motion_modifier_id_ >= 0) {
-+        stackchan.removeModifier(idle_motion_modifier_id_);
-+        idle_motion_modifier_id_ = -1;
-+    }
-+    if (idle_expression_modifier_id_ >= 0) {
-+        stackchan.removeModifier(idle_expression_modifier_id_);
-+        idle_expression_modifier_id_ = -1;
++    for (int* id : {&speaking_modifier_id_, &listening_motion_modifier_id_,
++                    &idle_motion_modifier_id_, &idle_expression_modifier_id_}) {
++        if (*id >= 0) stackchan.removeModifier(*id);
++        *id = -1;
 +    }
 +    if (park_head) {
-+        stackchan.motion().goHome(300);
++        // Match the settled idle pose used by the quiet profile. Motion::goHome()
++        // aims pitch at zero, which the HAL clamps to its 5-degree safety edge
++        // rather than the head's comfortable 20-degree resting angle.
++        ESP_LOGI(TAG, "Parking head from yaw=%d pitch=%d to yaw=0 pitch=200",
++                 stackchan.motion().getCurrentYawAngle(), stackchan.motion().getCurrentPitchAngle());
++        stackchan.motion().moveWithSpeed(0, 200, 350);
 +    }
 +    if (screen_off) {
 +        EnterIdleSleep();
@@ -3553,10 +3832,10 @@ index 7459888..ca72cbd 100644
 +    GetHAL().setBackLightBrightness(_brightness_before_idle_sleep, false);
 +}
 diff --git a/firmware/main/hal/board/stackchan_display.h b/firmware/main/hal/board/stackchan_display.h
-index f16f1f3..f08aa3a 100644
+index f16f1f3..48c90af 100644
 --- a/firmware/main/hal/board/stackchan_display.h
 +++ b/firmware/main/hal/board/stackchan_display.h
-@@ -15,6 +15,7 @@ private:
+@@ -15,10 +15,12 @@ private:
      esp_lcd_panel_io_handle_t panel_io_ = nullptr;
      esp_lcd_panel_handle_t panel_       = nullptr;
      int speaking_modifier_id_           = -1;
@@ -3564,10 +3843,17 @@ index f16f1f3..f08aa3a 100644
      int idle_motion_modifier_id_        = -1;
      int idle_expression_modifier_id_    = -1;
      int blink_modifier_id_              = -1;
-@@ -49,7 +50,17 @@ public:
+     bool is_sleeping_                   = false;
++    int companion_signature_ = -1;
+     uint8_t idle_motion_level_          = 2;
+ 
+     lv_obj_t* preview_image_                         = nullptr;
+@@ -49,7 +51,19 @@ public:
      virtual void SetStatus(const char* status) override;
      virtual void ShowNotification(const char* notification, int duration_ms = 3000) override;
  
++    void UpdateCompanionState();
++
 +    void EnterPoweredStandby(bool screen_off, bool park_head);
 +
      void LvglLock();
@@ -3742,36 +4028,48 @@ index 0000000..67074d7
 +
 +}  // namespace stackchan_sensors
 diff --git a/firmware/main/hal/hal.cpp b/firmware/main/hal/hal.cpp
-index 3ca8a14..2418661 100644
+index 3ca8a14..9d1f8de 100644
 --- a/firmware/main/hal/hal.cpp
 +++ b/firmware/main/hal/hal.cpp
-@@ -7,6 +7,8 @@
+@@ -7,6 +7,11 @@
  #include <memory>
  #include <mooncake_log.h>
  #include <nvs_flash.h>
 +#include <stackchan/notify/notify_client.h>
 +#include <stackchan/proximity/proximity_wake.h>
++#include <apps/common/quick_controls/quick_controls.h>
++#include <hal/board/stackchan_display.h>
++#include <board.h>
  
  static std::unique_ptr<Hal> _hal_instance;
  static const std::string_view _tag = "HAL";
-@@ -166,8 +168,10 @@ static void _stackchan_update_task(void* param)
+@@ -166,13 +171,18 @@ static void _stackchan_update_task(void* param)
          if (!is_setup_done) {
              // Setup when xiaozhi ready
              GetHAL().startSntp();
 -            view::create_home_indicator([]() { GetHAL().requestWarmReboot(0); }, 0x81DBBD, 0x134233);
 -            view::create_status_bar(0x81DBBD, 0x134233);
 +            view::create_home_indicator([]() { GetHAL().requestWarmReboot(0); }, 0x00B8D4, 0x03131D);
-+            view::create_status_bar(0x00B8D4, 0xF4F0E4);
++            view::create_quick_controls();
 +            notify::NotifyClient::GetInstance().init();
 +            stackchan_proximity::ProximityWake::GetInstance().init();
              is_setup_done = true;
          }
  
+         view::update_home_indicator();
+-        view::update_status_bar();
++        view::update_quick_controls();
++        notify::NotifyClient::GetInstance().UpdateFeedback();
++        auto display = dynamic_cast<StackChanAvatarDisplay*>(Board::GetInstance().GetDisplay());
++        if (display) display->UpdateCompanionState();
+     }
+ }
+ 
 diff --git a/firmware/main/hal/hal.h b/firmware/main/hal/hal.h
-index b8d3c80..fceadc7 100644
+index b8d3c80..7342f9d 100644
 --- a/firmware/main/hal/hal.h
 +++ b/firmware/main/hal/hal.h
-@@ -14,6 +14,7 @@
+@@ -14,13 +14,14 @@
  #include <smooth_lvgl.hpp>
  #include <array>
  #include <lvgl_image.h>
@@ -3779,6 +4077,14 @@ index b8d3c80..fceadc7 100644
  #include <string_view>
  
  /**
+  * @brief
+  *
+  */
+-enum class HeadPetGesture { None, Press, Release, SwipeForward, SwipeBackward };
++enum class HeadPetGesture { None, Press, Release, SwipeForward, SwipeBackward, Tap, DoubleTap, Hold };
+ 
+ /**
+  * @brief
 @@ -145,30 +146,41 @@ public:
          _panel->setSize(320, 240);
          _panel->setAlign(LV_ALIGN_CENTER);
@@ -3832,6 +4138,39 @@ index b8d3c80..fceadc7 100644
      std::unique_ptr<uitk::lvgl_cpp::Label> _label_logo;
      std::unique_ptr<uitk::lvgl_cpp::Label> _label_msg;
      std::unique_ptr<uitk::lvgl_cpp::Label> _label_version;
+diff --git a/firmware/main/hal/hal_head_touch.cpp b/firmware/main/hal/hal_head_touch.cpp
+index 3847d9e..0fa207e 100644
+--- a/firmware/main/hal/hal_head_touch.cpp
++++ b/firmware/main/hal/hal_head_touch.cpp
+@@ -9,6 +9,7 @@
+ #include <mooncake_log.h>
+ #include <freertos/FreeRTOS.h>
+ #include <freertos/task.h>
++#include <stackchan/controls/head_shortcuts.h>
+ 
+ static const std::string_view _tag = "HAL-HeadTouch";
+ 
+@@ -124,6 +125,7 @@ static void _head_touch_update_task(void* param)
+     TouchData data;
+ 
+     GestureRecognizer recognizer;
++    stackchan::controls::HeadShortcuts shortcuts;
+     HeadPetGesture gesture;
+ 
+     vTaskDelay(pdMS_TO_TICKS(200));
+@@ -140,6 +142,12 @@ static void _head_touch_update_task(void* param)
+             GetHAL().onHeadPetGesture.emit(gesture);
+         }
+ 
++        using stackchan::controls::Shortcut;
++        const bool swiped = gesture == HeadPetGesture::SwipeForward || gesture == HeadPetGesture::SwipeBackward;
++        auto shortcut = shortcuts.update(data.is_touched(), swiped, GetHAL().millis());
++        if (shortcut == Shortcut::Tap) GetHAL().onHeadPetGesture.emit(HeadPetGesture::Tap);
++        if (shortcut == Shortcut::DoubleTap) GetHAL().onHeadPetGesture.emit(HeadPetGesture::DoubleTap);
++        if (shortcut == Shortcut::Hold) GetHAL().onHeadPetGesture.emit(HeadPetGesture::Hold);
+         vTaskDelay(pdMS_TO_TICKS(50));
+     }
+ }
 diff --git a/firmware/main/hal/hal_mcp.cpp b/firmware/main/hal/hal_mcp.cpp
 index 0d73851..8092ae4 100644
 --- a/firmware/main/hal/hal_mcp.cpp
@@ -3942,6 +4281,133 @@ index 3f11ed6..0affa41 100644
          GetMooncake().installApp(std::make_unique<AppDance>());
          GetMooncake().installApp(std::make_unique<AppSetup>());
  
+diff --git a/firmware/main/stackchan/controls/behavior_state.h b/firmware/main/stackchan/controls/behavior_state.h
+new file mode 100644
+index 0000000..cda2337
+--- /dev/null
++++ b/firmware/main/stackchan/controls/behavior_state.h
+@@ -0,0 +1,27 @@
++#pragma once
++namespace stackchan::controls {
++enum class Mode { Privacy, Standby, Dnd, Notification, Offline, Listening, Speaking, Connecting, Idle };
++inline Mode resolveMode(bool privacy, bool standby, bool dnd, bool notification,
++                        bool connected, Mode conversation) {
++    if (privacy) return Mode::Privacy;
++    if (standby) return Mode::Standby;
++    if (dnd) return Mode::Dnd;
++    if (notification) return Mode::Notification;
++    // An active voice session is useful even if the control bridge is offline.
++    if (conversation != Mode::Idle) return conversation;
++    return connected ? Mode::Idle : Mode::Offline;
++}
++inline const char* modeText(Mode mode) {
++    switch (mode) {
++        case Mode::Privacy: return "Privacy on";
++        case Mode::Standby: return "Resting";
++        case Mode::Dnd: return "Do not disturb";
++        case Mode::Notification: return "Notification";
++        case Mode::Offline: return "Control service offline";
++        case Mode::Listening: return "Listening";
++        case Mode::Speaking: return "Speaking";
++        case Mode::Connecting: return "Connecting";
++        default: return "Ready";
++    }
++}
++}
+diff --git a/firmware/main/stackchan/controls/control_state.h b/firmware/main/stackchan/controls/control_state.h
+new file mode 100644
+index 0000000..2b1d621
+--- /dev/null
++++ b/firmware/main/stackchan/controls/control_state.h
+@@ -0,0 +1,39 @@
++#pragma once
++#include <array>
++#include <cstdint>
++#include <string>
++
++namespace stackchan::controls {
++enum class Control : unsigned { Volume, Brightness, Privacy, Dnd, Activity, Count };
++struct Values {
++    std::array<int, 5> value{70, 80, 0, 0, 1};
++    int get(Control key) const { return value[static_cast<unsigned>(key)]; }
++};
++// Caller serializes access. Pending fields survive snapshots and old ACKs;
++// only the ACK for the current coalesced update releases local ownership.
++struct State {
++    Values values;
++    uint32_t dirty = 0;
++    std::string update_id;
++    bool set(Control key, int value, const std::string& id) {
++        auto index = static_cast<unsigned>(key);
++        if (index >= values.value.size()) return false;
++        int low = key == Control::Brightness ? 5 : 0;
++        int high = key == Control::Activity ? 2 :
++                   (key == Control::Privacy || key == Control::Dnd ? 1 : 100);
++        if (value < low || value > high || values.value[index] == value) return false;
++        values.value[index] = value;
++        dirty |= 1u << index;
++        update_id = id;
++        return true;
++    }
++    void merge(const Values& remote, const std::string& accepted) {
++        if (!accepted.empty() && accepted == update_id) {
++            dirty = 0;
++            update_id.clear();
++        }
++        for (unsigned i = 0; i < values.value.size(); ++i)
++            if (!(dirty & (1u << i))) values.value[i] = remote.value[i];
++    }
++};
++} // namespace stackchan::controls
+diff --git a/firmware/main/stackchan/controls/head_shortcuts.h b/firmware/main/stackchan/controls/head_shortcuts.h
+new file mode 100644
+index 0000000..d57159c
+--- /dev/null
++++ b/firmware/main/stackchan/controls/head_shortcuts.h
+@@ -0,0 +1,43 @@
++#pragma once
++#include <cstdint>
++
++namespace stackchan::controls {
++enum class Shortcut { None, Tap, DoubleTap, Hold };
++class HeadShortcuts {
++public:
++    Shortcut update(bool touched, bool swipe, uint32_t now) {
++        Shortcut result = Shortcut::None;
++        if (touched && !down_) {
++            pressed_at_ = now;
++            cancelled_ = false;
++        }
++        if (swipe) {
++            cancelled_ = true;
++            pending_tap_ = false;
++        }
++        if (touched && !cancelled_ && now - pressed_at_ >= 1200) {
++            cancelled_ = true;
++            pending_tap_ = false;
++            result = Shortcut::Hold;
++        }
++        if (!touched && down_ && !cancelled_) {
++            if (pending_tap_ && now - released_at_ <= 350) {
++                pending_tap_ = false;
++                result = Shortcut::DoubleTap;
++            } else {
++                pending_tap_ = true;
++                released_at_ = now;
++            }
++        }
++        if (!touched && pending_tap_ && now - released_at_ > 350) {
++            pending_tap_ = false;
++            result = Shortcut::Tap;
++        }
++        down_ = touched;
++        return result;
++    }
++private:
++    bool down_ = false, cancelled_ = false, pending_tap_ = false;
++    uint32_t pressed_at_ = 0, released_at_ = 0;
++};
++}
 diff --git a/firmware/main/stackchan/modifiers/listening.h b/firmware/main/stackchan/modifiers/listening.h
 new file mode 100644
 index 0000000..471bc1e
@@ -4156,10 +4622,10 @@ index 08c4545..eb8adea 100644
      uitk::Vector2i _prev_angles;
 diff --git a/firmware/main/stackchan/notify/notify_client.cpp b/firmware/main/stackchan/notify/notify_client.cpp
 new file mode 100644
-index 0000000..08cd5cb
+index 0000000..6818d69
 --- /dev/null
 +++ b/firmware/main/stackchan/notify/notify_client.cpp
-@@ -0,0 +1,995 @@
+@@ -0,0 +1,1131 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 StackZeta
 + *
@@ -4182,6 +4648,7 @@ index 0000000..08cd5cb
 +#include <esp_heap_caps.h>
 +#include <esp_log.h>
 +#include <esp_timer.h>
++#include <esp_random.h>
 +#include <freertos/FreeRTOS.h>
 +#include <freertos/task.h>
 +#include <jpg/jpeg_to_image.h>
@@ -4196,6 +4663,8 @@ index 0000000..08cd5cb
 +#include "stackchan/stackchan.h"
 +
 +namespace notify {
++using stackchan::controls::Control;
++using stackchan::controls::Values;
 +
 +namespace {
 +
@@ -4436,7 +4905,18 @@ index 0000000..08cd5cb
 +        // Persisted so privacy mode holds from boot, before (or without) the
 +        // control service reconnecting to push settings.
 +        Settings privacy("stackzeta", false);
-+        _privacy_mode.store(privacy.GetInt("privacy_mode", 0) != 0, std::memory_order_relaxed);
++        _controls.values.value[2] = privacy.GetInt("privacy_mode", 0) != 0;
++        ArduinoJson::JsonDocument controls;
++        if (!ArduinoJson::deserializeJson(controls, privacy.GetString("controls"))) {
++            for (unsigned i = 0; i < 5; ++i) {
++                int value = controls["values"][i] | _controls.values.value[i];
++                int high = i == 4 ? 2 : (i == 2 || i == 3 ? 1 : 100);
++                _controls.values.value[i] = std::clamp(value, i == 1 ? 5 : 0, high);
++            }
++            _controls.dirty = (controls["dirty"] | 0u) & 31u;
++            _controls.update_id = controls["id"] | "";
++        }
++        updateControlFlagsLocked();
 +    }
 +
 +    void init()
@@ -4447,20 +4927,75 @@ index 0000000..08cd5cb
 +            return;
 +        }
 +        _gesture_connection = GetHAL().onHeadPetGesture.connect([this](HeadPetGesture gesture) {
-+            if (gesture == HeadPetGesture::SwipeForward) {
-+                _pending_gesture.store(1, std::memory_order_relaxed);
-+            } else if (gesture == HeadPetGesture::SwipeBackward) {
-+                _pending_gesture.store(2, std::memory_order_relaxed);
-+            }
++            if (gesture == HeadPetGesture::Tap) StopSpeech();
++            else if (gesture == HeadPetGesture::DoubleTap) DismissNotification();
++            else if (gesture == HeadPetGesture::Hold)
++                SetControl(Control::Privacy, !GetPrivacyMode());
++            // Strokes are reserved for the existing petting animation.
++            _user_activity.store(true);
 +        });
++        scheduleControls();
 +        _last_activity_time = esp_timer_get_time();
 +        xTaskCreatePinnedToCore(&NotifyClientImpl::TaskEntry, "notify_client", 6144, this, 3, nullptr, 1);
 +    }
 +
-+    void SetDoNotDisturb(bool enabled)
-+    {
-+        _do_not_disturb.store(enabled, std::memory_order_relaxed);
-+        ESP_LOGI(TAG, "Do Not Disturb %s", enabled ? "enabled" : "disabled");
++    void SetDoNotDisturb(bool enabled) { SetControl(Control::Dnd, enabled); }
++
++    Values GetControls() const {
++        std::lock_guard<std::mutex> lock(_control_mutex);
++        return _controls.values;
++    }
++    bool HasPendingSettings() const {
++        std::lock_guard<std::mutex> lock(_control_mutex);
++        return _controls.dirty != 0;
++    }
++    bool IsConnected() const { return _connected.load(); }
++    stackchan::controls::Mode GetMode() const {
++        using namespace stackchan::controls;
++        Mode conversation = Mode::Idle;
++        switch (Application::GetInstance().GetDeviceState()) {
++            case kDeviceStateListening: conversation = Mode::Listening; break;
++            case kDeviceStateSpeaking: conversation = Mode::Speaking; break;
++            case kDeviceStateConnecting: conversation = Mode::Connecting; break;
++            default: break;
++        }
++        return resolveMode(GetPrivacyMode(), _standby_active.load(), GetDoNotDisturb(),
++                           esp_timer_get_time() < _notification_led_until.load(), IsConnected(), conversation);
++    }
++    void SetControlsOpen(bool open) { _controls_open.store(open); _user_activity.store(true); }
++    bool ControlsOpen() const { return _controls_open.load(); }
++    void UserActivity() { _user_activity.store(true); }
++    void UpdateFeedback() { updateStateLeds(); }
++
++    void SetControl(Control key, int value) {
++        char id[17];
++        snprintf(id, sizeof(id), "%08lx%08lx", (unsigned long)esp_random(), (unsigned long)esp_random());
++        {
++            std::lock_guard<std::mutex> lock(_control_mutex);
++            if (!_controls.set(key, value, id)) return;
++            updateControlFlagsLocked();
++            persistControlsLocked();
++        }
++        _user_activity.store(true);
++        scheduleControls();
++    }
++
++    void StopSpeech() {
++        _stop_audio.store(true);
++        _user_activity.store(true);
++        Application::GetInstance().Schedule([]() {
++            auto& app = Application::GetInstance();
++            if (app.GetDeviceState() == kDeviceStateSpeaking) {
++                app.AbortSpeaking(kAbortReasonNone);
++                app.GetAudioService().ResetDecoder();
++                app.SetDeviceState(kDeviceStateIdle);
++            }
++        });
++    }
++
++    void DismissNotification() {
++        _dismiss_requested.store(true);
++        StopSpeech();
 +    }
 +
 +    bool GetDoNotDisturb() const
@@ -4513,6 +5048,9 @@ index 0000000..08cd5cb
 +        while (true) {
 +            vTaskDelay(pdMS_TO_TICKS(kTaskLoopDelayMs));
 +
++            if (_user_activity.exchange(false) || ControlsOpen()) wakeFromPoweredStandby();
++            processGesture();
++            updatePoweredStandby();
 +            if (!_websocket || !_websocket->IsConnected()) {
 +                int64_t now = esp_timer_get_time();
 +                if (now - _last_reconnect_attempt > kReconnectIntervalUs) {
@@ -4531,6 +5069,7 @@ index 0000000..08cd5cb
 +                _last_keepalive_sent = now;
 +                if (!_websocket->Send("{\"type\":\"ping\"}")) {
 +                    ESP_LOGW(TAG, "Keepalive send failed, treating connection as dead");
++                    _connected.store(false);
 +                    _websocket.reset();
 +                    continue;
 +                }
@@ -4538,11 +5077,10 @@ index 0000000..08cd5cb
 +
 +            drainIncoming();
 +            sendEvents();
-+            processGesture();
++            sendControlUpdate();
 +            maybeShowNext();
 +            maybeResleep();
 +            updatePoweredStandby();
-+            updateStateLeds();
 +        }
 +    }
 +
@@ -4554,6 +5092,7 @@ index 0000000..08cd5cb
 +        auto& board  = Board::GetInstance();
 +        auto network = board.GetNetwork();
 +
++        _connected.store(false);
 +        _websocket.reset();
 +        _websocket = network->CreateWebSocket(2);
 +        if (!_websocket) {
@@ -4561,14 +5100,14 @@ index 0000000..08cd5cb
 +            return;
 +        }
 +
-+        _websocket->OnConnected([]() { ESP_LOGI(TAG, "Connected to notify bridge"); });
-+        _websocket->OnDisconnected([]() { ESP_LOGI(TAG, "Disconnected from notify bridge"); });
++        _websocket->OnConnected([this]() { _connected.store(true); ESP_LOGI(TAG, "Connected to notify bridge"); });
++        _websocket->OnDisconnected([this]() { _connected.store(false); ESP_LOGI(TAG, "Disconnected from notify bridge"); });
 +        _websocket->OnData([this](const char* data, size_t len, bool binary) {
 +            if (binary) {
 +                return;
 +            }
 +            std::lock_guard<std::mutex> lock(_mutex);
-+            _raw_queue.emplace_back(data, len);
++            if (len <= 16384 && _raw_queue.size() < 16) _raw_queue.emplace_back(data, len);
 +        });
 +
 +        if (!_websocket->Connect(_url.c_str())) {
@@ -4597,7 +5136,7 @@ index 0000000..08cd5cb
 +
 +            const char* type = doc["type"] | "";
 +            if (strcmp(type, "settings") == 0) {
-+                applySettings(doc["settings"], doc["acknowledge"] | false);
++                applySettings(doc["settings"], doc["acknowledge"] | false, doc["accepted_update"] | "");
 +                continue;
 +            }
 +            if (strcmp(type, "notification") != 0) {
@@ -4676,7 +5215,8 @@ index 0000000..08cd5cb
 +
 +    void maybeShowNext()
 +    {
-+        if (_queue.empty()) {
++        if (GetDoNotDisturb()) { _queue.clear(); return; }
++        if (ControlsOpen() || _queue.empty()) {
 +            return;
 +        }
 +
@@ -4698,31 +5238,83 @@ index 0000000..08cd5cb
 +        _queue.pop_front();
 +        _last_shown_time = now;
 +        _resleep_pending = true;
-+        _notification_led_color = note.urgent ? _led_urgent : note.color;
++        _notification_led_color = note.urgent ? _led_urgent.load() : note.color;
 +        _notification_led_until = now + kResleepAfterNotificationUs;
 +
 +        wakeFromPoweredStandby();
-+        show(note);
 +        _last_shown_note = note;
++        _stop_audio.store(false);
++        show(note);
 +    }
 +
 +    void processGesture()
 +    {
-+        int gesture = _pending_gesture.exchange(0, std::memory_order_relaxed);
-+        if (gesture != 0) {
-+            wakeFromPoweredStandby();
++        if (!_dismiss_requested.exchange(false)) return;
++        acknowledge(_last_shown_note);
++        _last_shown_note = {};
++        _resleep_pending = false;
++        _notification_led_until = 0;
++        Application::GetInstance().Schedule([]() {
++            auto display = Board::GetInstance().GetDisplay();
++            if (display) display->ClearChatMessages();
++        });
++    }
++
++    void updateControlFlagsLocked() {
++        _privacy_mode.store(_controls.values.get(Control::Privacy) != 0);
++        _do_not_disturb.store(_controls.values.get(Control::Dnd) != 0);
++    }
++
++    void persistControlsLocked() {
++        ArduinoJson::JsonDocument doc;
++        for (int value : _controls.values.value) doc["values"].add(value);
++        doc["dirty"] = _controls.dirty;
++        doc["id"] = _controls.update_id;
++        std::string json;
++        ArduinoJson::serializeJson(doc, json);
++        Settings saved("stackzeta", true);
++        saved.SetString("controls", json);
++        saved.SetInt("privacy_mode", _controls.values.get(Control::Privacy));
++    }
++
++    void scheduleControls() {
++        Application::GetInstance().Schedule([this]() {
++            auto values = GetControls();
++            {
++                LvglLockGuard lock;
++                WakeFromIdleSleep();
++                GetHAL().setSpeakerVolume(values.get(Control::Volume), true);
++                GetHAL().setBackLightBrightness(values.get(Control::Brightness), true);
++                auto cfg = GetHAL().getXiaozhiConfig();
++                const int level = values.get(Control::Activity);
++                cfg.idleRandomMovementLevel = level == 2 ? 3 : level;
++                if (_sleep_timeout.load() >= 0) cfg.idleShutdownTimeSeconds = _sleep_timeout.load();
++                GetHAL().setXiaozhiConfig(cfg);
++            }
++            Application::GetInstance().ApplyPrivacyMode(GetPrivacyMode());
++        });
++    }
++
++    void sendControlUpdate() {
++        if (esp_timer_get_time() - _last_control_sent < 1'000'000) return;
++        ArduinoJson::JsonDocument doc;
++        {
++            std::lock_guard<std::mutex> lock(_control_mutex);
++            if (!_controls.dirty) return;
++            doc["type"] = "settings_update";
++            doc["id"] = _controls.update_id;
++            auto& v = _controls.values;
++            if (_controls.dirty & 1) doc["changes"]["device"]["volume"] = v.get(Control::Volume);
++            if (_controls.dirty & 2) doc["changes"]["device"]["brightness"] = v.get(Control::Brightness);
++            if (_controls.dirty & 4) doc["changes"]["device"]["privacy_mode"] = v.get(Control::Privacy) != 0;
++            if (_controls.dirty & 8) doc["changes"]["notifications"]["dnd"] = v.get(Control::Dnd) != 0;
++            if (_controls.dirty & 16) doc["changes"]["personality"]["activity"] =
++                v.get(Control::Activity) == 0 ? "quiet" : v.get(Control::Activity) == 2 ? "lively" : "balanced";
 +        }
-+        if (gesture == 1 && !_last_shown_note.id.empty()) {
-+            acknowledge(_last_shown_note);
-+            ESP_LOGI(TAG, "Acknowledged notification by forward swipe: %s", _last_shown_note.id.c_str());
-+        } else if (gesture == 2 && !_last_shown_note.title.empty()) {
-+            PendingNotification repeat = _last_shown_note;
-+            repeat.id.clear();
-+            repeat.urgent = false;
-+            repeat.interruption_requested = false;
-+            _queue.push_front(std::move(repeat));
-+            ESP_LOGI(TAG, "Repeating last notification by backward swipe");
-+        }
++        std::string json;
++        ArduinoJson::serializeJson(doc, json);
++        _websocket->Send(json);
++        _last_control_sent = esp_timer_get_time();
 +    }
 +
 +    bool playSettingsAcknowledgement()
@@ -4759,10 +5351,21 @@ index 0000000..08cd5cb
 +        return queued;
 +    }
 +
-+    void applySettings(ArduinoJson::JsonVariantConst settings, bool acknowledge_update)
++    void applySettings(ArduinoJson::JsonVariantConst settings, bool acknowledge_update, const std::string& accepted)
 +    {
-+        auto notifications = settings["notifications"];
-+        SetDoNotDisturb(notifications["dnd"] | false);
++        Values remote;
++        remote.value[0] = std::clamp(settings["device"]["volume"] | 70, 0, 100);
++        remote.value[1] = std::clamp(settings["device"]["brightness"] | 80, 5, 100);
++        remote.value[2] = settings["device"]["privacy_mode"] | false;
++        remote.value[3] = settings["notifications"]["dnd"] | false;
++        const char* activity = settings["personality"]["activity"] | "balanced";
++        remote.value[4] = strcmp(activity, "quiet") == 0 ? 0 : strcmp(activity, "lively") == 0 ? 2 : 1;
++        {
++            std::lock_guard<std::mutex> lock(_control_mutex);
++            _controls.merge(remote, accepted);
++            updateControlFlagsLocked();
++            persistControlsLocked();
++        }
 +
 +        {
 +            std::lock_guard<std::mutex> lock(_settings_mutex);
@@ -4791,22 +5394,14 @@ index 0000000..08cd5cb
 +        }
 +
 +        auto device = settings["device"];
-+        int volume = device["volume"] | 70;
-+        int brightness = device["brightness"] | 80;
-+        bool privacy = device["privacy_mode"] | false;
++
 +        _standby_timeout_seconds = std::max(0, device["standby_timeout_seconds"] | 300);
 +        _standby_screen_off = device["standby_screen_off"] | true;
 +        _standby_leds_off = device["standby_leds_off"] | true;
 +        _standby_park_head = device["standby_park_head"] | true;
-+        GetHAL().setSpeakerVolume(static_cast<uint8_t>(std::clamp(volume, 0, 100)), true);
-+        GetHAL().setBackLightBrightness(static_cast<uint8_t>(std::clamp(brightness, 5, 100)), true);
 +
-+        auto xiaozhi_config = GetHAL().getXiaozhiConfig();
-+        xiaozhi_config.idleShutdownTimeSeconds = device["sleep_timeout_seconds"] | 600;
-+        const char* activity = settings["personality"]["activity"] | "balanced";
-+        xiaozhi_config.idleRandomMovementLevel = strcmp(activity, "quiet") == 0 ? 0 :
-+                                                  strcmp(activity, "lively") == 0 ? 3 : 1;
-+        GetHAL().setXiaozhiConfig(xiaozhi_config);
++
++        _sleep_timeout.store(device["sleep_timeout_seconds"] | 600);
 +
 +        {
 +            std::lock_guard<std::mutex> lock(_settings_mutex);
@@ -4829,18 +5424,11 @@ index 0000000..08cd5cb
 +        _led_privacy      = ParseHexColor(led["privacy"] | "", _led_privacy);
 +        _led_offline      = ParseHexColor(led["offline"] | "", _led_offline);
 +
-+        bool previous_privacy = _privacy_mode.exchange(privacy, std::memory_order_relaxed);
-+        if (previous_privacy != privacy) {
-+            Settings saved("stackzeta", true);
-+            saved.SetInt("privacy_mode", privacy ? 1 : 0);
-+            ReportEvent(std::string("privacy ") + (privacy ? "on" : "off") + " received");
-+            Application::GetInstance().ApplyPrivacyMode(privacy);
-+        }
 +        _last_led_color = UINT32_MAX;
 +        _last_activity_time = esp_timer_get_time();
 +        wakeFromPoweredStandby();
-+        ESP_LOGI(TAG, "Applied control-panel settings (privacy=%d, volume=%d, brightness=%d)", privacy, volume,
-+                 brightness);
++        scheduleControls();
++        ESP_LOGI(TAG, "Applied settings; local changes pending=%d", HasPendingSettings());
 +        if (acknowledge_update) {
 +            const bool played = playSettingsAcknowledgement();
 +            if (_websocket) {
@@ -4869,31 +5457,24 @@ index 0000000..08cd5cb
 +
 +    void updateStateLeds()
 +    {
-+        uint32_t color;
-+        int64_t now = esp_timer_get_time();
-+        // Privacy wins over standby's LEDs-off: the ring is the only visible
-+        // sign that the microphone is blocked, so it must never go dark.
-+        if (_privacy_mode.load(std::memory_order_relaxed)) {
-+            color = _led_privacy;
-+        } else if (_standby_active && _standby_leds_off) {
-+            color = 0;
-+        } else if (_do_not_disturb.load(std::memory_order_relaxed)) {
-+            color = _led_dnd;
-+        } else if (now < _notification_led_until) {
-+            color = _notification_led_color;
-+        } else if (!_websocket || !_websocket->IsConnected()) {
-+            color = _led_offline;
-+        } else {
-+            switch (Application::GetInstance().GetDeviceState()) {
-+                case kDeviceStateListening: color = _led_listening; break;
-+                case kDeviceStateSpeaking: color = _led_speaking; break;
-+                default: color = _led_idle; break;
-+            }
++        using stackchan::controls::Mode;
++        uint32_t color = _led_idle;
++        switch (GetMode()) {
++            case Mode::Privacy: color = _led_privacy; break;
++            case Mode::Standby: color = _standby_leds_off ? 0 : _led_idle.load(); break;
++            case Mode::Dnd: color = _led_dnd; break;
++            case Mode::Notification: color = _notification_led_color; break;
++            case Mode::Offline: color = _led_offline; break;
++            case Mode::Listening: color = _led_listening; break;
++            case Mode::Speaking: color = _led_speaking; break;
++            case Mode::Connecting: color = _led_notification; break;
++            default: break;
 +        }
 +        if (color == _last_led_color) {
 +            return;
 +        }
 +        _last_led_color = color;
++        LvglLockGuard lock;
 +        auto& stackchan = GetStackChan();
 +        stackchan.leftNeonLight().setDuration(0.35f);
 +        stackchan.rightNeonLight().setDuration(0.35f);
@@ -4915,7 +5496,7 @@ index 0000000..08cd5cb
 +
 +    void updatePoweredStandby()
 +    {
-+        if (_standby_timeout_seconds == 0) {
++        if (ControlsOpen() || _standby_timeout_seconds == 0) {
 +            wakeFromPoweredStandby();
 +            return;
 +        }
@@ -4935,7 +5516,7 @@ index 0000000..08cd5cb
 +        _standby_active = true;
 +        _last_led_color = UINT32_MAX;
 +        ESP_LOGI(TAG, "Entered powered-on standby (screen=%d, leds=%d, park=%d)", _standby_screen_off,
-+                 _standby_leds_off, _standby_park_head);
++                 _standby_leds_off.load(), _standby_park_head);
 +    }
 +
 +    void interruptConversation()
@@ -4974,7 +5555,7 @@ index 0000000..08cd5cb
 +        if (!_resleep_pending) {
 +            return;
 +        }
-+        if (isDeviceBusy()) {
++        if (ControlsOpen() || isDeviceBusy()) {
 +            return;  // a real conversation is running; let its own STANDBY transition handle sleep
 +        }
 +        if (esp_timer_get_time() - _last_shown_time < kResleepAfterNotificationUs) {
@@ -5043,7 +5624,11 @@ index 0000000..08cd5cb
 +                if (!codec->output_enabled()) {
 +                    codec->EnableOutput(true);
 +                }
-+                codec->OutputData(pcm);
++                for (size_t offset = 0; offset < pcm.size() && !_stop_audio.load(); offset += 480) {
++                    const size_t count = std::min<size_t>(480, pcm.size() - offset);
++                    std::vector<int16_t> chunk(pcm.begin() + offset, pcm.begin() + offset + count);
++                    codec->OutputData(chunk);
++                }
 +            }
 +        }
 +
@@ -5057,28 +5642,33 @@ index 0000000..08cd5cb
 +    int64_t _last_shown_time        = 0;
 +    int64_t _last_activity_time     = 0;
 +    bool _resleep_pending           = false;
-+    bool _standby_active            = false;
++    std::atomic<bool> _standby_active{false};
 +    int _standby_timeout_seconds    = 300;
 +    bool _standby_screen_off        = true;
-+    bool _standby_leds_off          = true;
++    std::atomic<bool> _standby_leds_off{true};
 +    bool _standby_park_head         = true;
-+    int64_t _notification_led_until = 0;
-+    uint32_t _notification_led_color = 0xFFAA24;
-+    uint32_t _last_led_color         = UINT32_MAX;
++    std::atomic<int64_t> _notification_led_until{0};
++    std::atomic<uint32_t> _notification_led_color{0xFFAA24};
++    std::atomic<uint32_t> _last_led_color{UINT32_MAX};
 +
 +    std::atomic<bool> _do_not_disturb{false};
 +    std::atomic<bool> _privacy_mode{false};
-+    std::atomic<int> _pending_gesture{0};
++    mutable std::mutex _control_mutex;
++    stackchan::controls::State _controls;
++    std::atomic<bool> _connected{false}, _controls_open{false}, _user_activity{false};
++    std::atomic<bool> _dismiss_requested{false}, _stop_audio{false};
++    int64_t _last_control_sent = 0;
++    std::atomic<int> _sleep_timeout{-1};
 +    int _gesture_connection = -1;
 +
-+    uint32_t _led_idle         = 0x00141D;
-+    uint32_t _led_listening    = 0x00E5F0;
-+    uint32_t _led_speaking     = 0x0A799B;
-+    uint32_t _led_notification = 0xFFAA24;
-+    uint32_t _led_urgent       = 0xFF5A36;
-+    uint32_t _led_dnd          = 0x7B3FB2;
-+    uint32_t _led_privacy      = 0xFF0000;
-+    uint32_t _led_offline      = 0x303840;
++    std::atomic<uint32_t> _led_idle{0x00141D};
++    std::atomic<uint32_t> _led_listening{0x00E5F0};
++    std::atomic<uint32_t> _led_speaking{0x0A799B};
++    std::atomic<uint32_t> _led_notification{0xFFAA24};
++    std::atomic<uint32_t> _led_urgent{0xFF5A36};
++    std::atomic<uint32_t> _led_dnd{0x7B3FB2};
++    std::atomic<uint32_t> _led_privacy{0xFF0000};
++    std::atomic<uint32_t> _led_offline{0x303840};
 +
 +    std::mutex _mutex;
 +    std::deque<std::string> _raw_queue;
@@ -5124,6 +5714,18 @@ index 0000000..08cd5cb
 +    Impl().init();
 +}
 +
++void NotifyClient::SetControl(Control key, int value) { Impl().SetControl(key, value); }
++Values NotifyClient::GetControls() const { return Impl().GetControls(); }
++bool NotifyClient::HasPendingSettings() const { return Impl().HasPendingSettings(); }
++bool NotifyClient::IsConnected() const { return Impl().IsConnected(); }
++stackchan::controls::Mode NotifyClient::GetMode() const { return Impl().GetMode(); }
++void NotifyClient::SetControlsOpen(bool open) { Impl().SetControlsOpen(open); }
++bool NotifyClient::ControlsOpen() const { return Impl().ControlsOpen(); }
++void NotifyClient::StopSpeech() { Impl().StopSpeech(); }
++void NotifyClient::DismissNotification() { Impl().DismissNotification(); }
++void NotifyClient::UserActivity() { Impl().UserActivity(); }
++void NotifyClient::UpdateFeedback() { Impl().UpdateFeedback(); }
++
 +void NotifyClient::SetDoNotDisturb(bool enabled)
 +{
 +    Impl().SetDoNotDisturb(enabled);
@@ -5157,10 +5759,10 @@ index 0000000..08cd5cb
 +}  // namespace notify
 diff --git a/firmware/main/stackchan/notify/notify_client.h b/firmware/main/stackchan/notify/notify_client.h
 new file mode 100644
-index 0000000..5b88694
+index 0000000..0659cd5
 --- /dev/null
 +++ b/firmware/main/stackchan/notify/notify_client.h
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,64 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 StackZeta
 + *
@@ -5169,6 +5771,8 @@ index 0000000..5b88694
 +#pragma once
 +
 +#include <string>
++#include <stackchan/controls/control_state.h>
++#include <stackchan/controls/behavior_state.h>
 +
 +namespace notify {
 +
@@ -5188,11 +5792,19 @@ index 0000000..5b88694
 +    // inside a locked UI update loop.
 +    void init();
 +
-+    // Do Not Disturb: while enabled, incoming notifications are dropped
-+    // (logged, not queued) rather than shown/spoken once the device is
-+    // free. Deliberately not persisted across reboots — a stuck-on DND
-+    // that survives a power cycle silently would be a worse footgun than
-+    // just having to say it again. Safe to call from any task.
++    // Local changes are persisted and retried until the bridge acknowledges
++    // them. An unrelated panel update cannot overwrite pending local fields.
++    void SetControl(stackchan::controls::Control key, int value);
++    stackchan::controls::Values GetControls() const;
++    bool HasPendingSettings() const;
++    bool IsConnected() const;
++    stackchan::controls::Mode GetMode() const;
++    void SetControlsOpen(bool open);
++    bool ControlsOpen() const;
++    void StopSpeech();
++    void DismissNotification();
++    void UserActivity();
++    void UpdateFeedback();
 +    void SetDoNotDisturb(bool enabled);
 +    bool GetDoNotDisturb() const;
 +
@@ -5356,13 +5968,13 @@ index 0000000..dc7f8af
 +
 +}  // namespace stackchan_proximity
 diff --git a/firmware/patches/xiaozhi-esp32.patch b/firmware/patches/xiaozhi-esp32.patch
-index a580fbc..2c2e0ba 100644
+index a580fbc..52c2762 100644
 --- a/firmware/patches/xiaozhi-esp32.patch
 +++ b/firmware/patches/xiaozhi-esp32.patch
-@@ -1,8 +1,58 @@
+@@ -1,8 +1,84 @@
  diff --git a/main/application.cc b/main/application.cc
 -index d69d43d..3b6f07e 100644
-+index d69d43d..506f0ea 100644
++index d69d43d..7003e7a 100644
  --- a/main/application.cc
  +++ b/main/application.cc
 -@@ -610,33 +610,36 @@ void Application::InitializeProtocol() {
@@ -5391,7 +6003,33 @@ index a580fbc..2c2e0ba 100644
 + 
 + Application::Application() {
 +     event_group_ = xEventGroupCreate();
-+@@ -359,6 +372,10 @@ void Application::CheckAssetsVersion() {
++@@ -218,10 +231,23 @@ void Application::Run() {
++         }
++ 
++         if (bits & MAIN_EVENT_SEND_AUDIO) {
++-            while (auto packet = audio_service_.PopPacketFromSendQueue()) {
++-                if (protocol_ && !protocol_->SendAudio(std::move(packet))) {
+++            unsigned int sent_in_event = 0;
+++            // A live microphone can refill this queue as fast as it is drained.
+++            // Bound the pass so a slow WebSocket cannot starve state changes.
+++            while (sent_in_event < 4) {
+++                auto packet = audio_service_.PopPacketFromSendQueue();
+++                if (!packet) {
+++                    break;
+++                }
+++                const bool sent = protocol_ && protocol_->SendAudio(std::move(packet));
+++                if (!sent) {
+++                    ESP_LOGW(TAG, "Microphone audio send failed");
++                     break;
++                 }
+++                ++sent_in_event;
+++            }
+++            if (sent_in_event == 4) {
+++                xEventGroupSetBits(event_group_, MAIN_EVENT_SEND_AUDIO);
++             }
++         }
++ 
++@@ -359,6 +385,10 @@ void Application::CheckAssetsVersion() {
 + 
 +     if (!download_url.empty()) {
 +         settings.EraseKey("download_url");
@@ -5402,7 +6040,7 @@ index a580fbc..2c2e0ba 100644
 + 
 +         char message[256];
 +         snprintf(message, sizeof(message), Lang::Strings::FOUND_NEW_ASSETS, download_url.c_str());
-+@@ -525,6 +542,13 @@ void Application::InitializeProtocol() {
++@@ -525,6 +555,13 @@ void Application::InitializeProtocol() {
 +             auto state = cJSON_GetObjectItem(root, "state");
 +             if (strcmp(state->valuestring, "start") == 0) {
 +                 Schedule([this]() {
@@ -5416,15 +6054,24 @@ index a580fbc..2c2e0ba 100644
 +                     aborted_ = false;
 +                     SetDeviceState(kDeviceStateSpeaking);
 +                 });
-+@@ -610,33 +634,36 @@ void Application::InitializeProtocol() {
++@@ -610,33 +647,36 @@ void Application::InitializeProtocol() {
   }
   
   void Application::ShowActivationCode(const std::string& code, const std::string& message) {
-@@ -66,6 +116,172 @@ index d69d43d..3b6f07e 100644
+@@ -39,7 +115,7 @@ index d69d43d..3b6f07e 100644
+ +    // };
+ +    // static const std::array<digit_sound, 10> digit_sounds{{
+ +    //     digit_sound{'0', Lang::Sounds::OGG_0},
+-+    //     digit_sound{'1', Lang::Sounds::OGG_1}, 
+++    //     digit_sound{'1', Lang::Sounds::OGG_1},
+ +    //     digit_sound{'2', Lang::Sounds::OGG_2},
+ +    //     digit_sound{'3', Lang::Sounds::OGG_3},
+ +    //     digit_sound{'4', Lang::Sounds::OGG_4},
+@@ -66,6 +142,173 @@ index d69d43d..3b6f07e 100644
   }
   
   void Application::Alert(const char* status, const char* message, const char* emotion, const std::string_view& sound) {
-+@@ -693,6 +720,10 @@ void Application::HandleToggleChatEvent() {
++@@ -693,6 +733,10 @@ void Application::HandleToggleChatEvent() {
 +     }
 + 
 +     if (state == kDeviceStateIdle) {
@@ -5435,7 +6082,7 @@ index a580fbc..2c2e0ba 100644
 +         ListeningMode mode = GetDefaultListeningMode();
 +         if (!protocol_->IsAudioChannelOpened()) {
 +             SetDeviceState(kDeviceStateConnecting);
-+@@ -741,6 +772,11 @@ void Application::HandleStartListeningEvent() {
++@@ -741,6 +785,11 @@ void Application::HandleStartListeningEvent() {
 +         ESP_LOGE(TAG, "Protocol not initialized");
 +         return;
 +     }
@@ -5447,7 +6094,7 @@ index a580fbc..2c2e0ba 100644
 +     
 +     if (state == kDeviceStateIdle) {
 +         if (!protocol_->IsAudioChannelOpened()) {
-+@@ -760,6 +796,7 @@ void Application::HandleStartListeningEvent() {
++@@ -760,6 +809,7 @@ void Application::HandleStartListeningEvent() {
 + 
 + void Application::HandleStopListeningEvent() {
 +     auto state = GetDeviceState();
@@ -5455,7 +6102,7 @@ index a580fbc..2c2e0ba 100644
 +     
 +     if (state == kDeviceStateAudioTesting) {
 +         audio_service_.EnableAudioTesting(false);
-+@@ -777,6 +814,11 @@ void Application::HandleWakeWordDetectedEvent() {
++@@ -777,6 +827,11 @@ void Application::HandleWakeWordDetectedEvent() {
 +     if (!protocol_) {
 +         return;
 +     }
@@ -5467,7 +6114,7 @@ index a580fbc..2c2e0ba 100644
 + 
 +     auto state = GetDeviceState();
 +     auto wake_word = audio_service_.GetLastWakeWord();
-+@@ -827,7 +869,7 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
++@@ -827,7 +882,7 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
 + 
 +     if (!protocol_->IsAudioChannelOpened()) {
 +         if (!protocol_->OpenAudioChannel()) {
@@ -5476,7 +6123,7 @@ index a580fbc..2c2e0ba 100644
 +             return;
 +         }
 +     }
-+@@ -854,6 +896,8 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
++@@ -854,6 +909,8 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
 + 
 + void Application::HandleStateChangedEvent() {
 +     DeviceState new_state = state_machine_.GetState();
@@ -5485,7 +6132,7 @@ index a580fbc..2c2e0ba 100644
 +     clock_ticks_ = 0;
 + 
 +     auto& board = Board::GetInstance();
-+@@ -868,7 +912,7 @@ void Application::HandleStateChangedEvent() {
++@@ -868,7 +925,7 @@ void Application::HandleStateChangedEvent() {
 +             display->ClearChatMessages();  // Clear messages first
 +             display->SetEmotion("neutral"); // Then set emotion (wechat mode checks child count)
 +             audio_service_.EnableVoiceProcessing(false);
@@ -5494,7 +6141,7 @@ index a580fbc..2c2e0ba 100644
 +             break;
 +         case kDeviceStateConnecting:
 +             display->SetStatus(Lang::Strings::CONNECTING);
-+@@ -876,6 +920,16 @@ void Application::HandleStateChangedEvent() {
++@@ -876,6 +933,16 @@ void Application::HandleStateChangedEvent() {
 +             display->SetChatMessage("system", "");
 +             break;
 +         case kDeviceStateListening:
@@ -5511,7 +6158,7 @@ index a580fbc..2c2e0ba 100644
 +             display->SetStatus(Lang::Strings::LISTENING);
 +             display->SetEmotion("neutral");
 + 
-+@@ -912,7 +966,7 @@ void Application::HandleStateChangedEvent() {
++@@ -912,7 +979,7 @@ void Application::HandleStateChangedEvent() {
 +             if (listening_mode_ != kListeningModeRealtime) {
 +                 audio_service_.EnableVoiceProcessing(false);
 +                 // Only AFE wake word can be detected in speaking mode
@@ -5520,12 +6167,13 @@ index a580fbc..2c2e0ba 100644
 +             }
 +             audio_service_.ResetDecoder();
 +             break;
-+@@ -1016,10 +1070,45 @@ bool Application::UpgradeFirmware(const std::string& url, const std::string& ver
++@@ -1016,10 +1083,46 @@ bool Application::UpgradeFirmware(const std::string& url, const std::string& ver
 +     }
 + }
 + 
 ++void Application::ApplyPrivacyMode(bool enabled) {
-++    Schedule([this, enabled]() {
+++    Schedule([this]() {
+++        const bool enabled = PrivacyModeActive();
 ++        auto state = GetDeviceState();
 ++        if (!enabled) {
 ++            if (state == kDeviceStateIdle) {
@@ -5566,7 +6214,7 @@ index a580fbc..2c2e0ba 100644
 + 
 +     auto state = GetDeviceState();
 +     
-+@@ -1116,4 +1205,3 @@ void Application::ResetProtocol() {
++@@ -1116,4 +1219,3 @@ void Application::ResetProtocol() {
 +         protocol_.reset();
 +     });
 + }
@@ -5593,15 +6241,77 @@ index a580fbc..2c2e0ba 100644
  diff --git a/main/assets.cc b/main/assets.cc
  index ad61944..6b84daf 100644
  --- a/main/assets.cc
-@@ -245,6 +461,53 @@ index 3692e0c..7bfbc5c 100644
+@@ -245,6 +488,137 @@ index 3692e0c..7bfbc5c 100644
       
       // Strategy instance
       std::unique_ptr<AssetStrategy> strategy_;
 +diff --git a/main/audio/audio_service.cc b/main/audio/audio_service.cc
-+index 350ac58..f553d6b 100644
++index 350ac58..b525516 100644
 +--- a/main/audio/audio_service.cc
 ++++ b/main/audio/audio_service.cc
-+@@ -517,6 +517,23 @@ bool AudioService::PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> pa
++@@ -325,11 +325,12 @@ void AudioService::AudioOutputTask() {
++ }
++ 
++ void AudioService::OpusCodecTask() {
+++    unsigned int stale_send_packets = 0;
++     while (true) {
++         std::unique_lock<std::mutex> lock(audio_queue_mutex_);
++         audio_queue_cv_.wait(lock, [this]() {
++             return service_stopped_ ||
++-                (!audio_encode_queue_.empty() && audio_send_queue_.size() < MAX_SEND_PACKETS_IN_QUEUE) ||
+++                !audio_encode_queue_.empty() ||
++                 (!audio_decode_queue_.empty() && audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE);
++         });
++         if (service_stopped_) {
++@@ -392,7 +393,7 @@ void AudioService::OpusCodecTask() {
++             debug_statistics_.decode_count++;
++         }
++         /* Encode the audio to send queue */
++-        if (!audio_encode_queue_.empty() && audio_send_queue_.size() < MAX_SEND_PACKETS_IN_QUEUE) {
+++        if (!audio_encode_queue_.empty()) {
++             auto task = std::move(audio_encode_queue_.front());
++             audio_encode_queue_.pop_front();
++             audio_queue_cv_.notify_all();
++@@ -421,6 +422,14 @@ void AudioService::OpusCodecTask() {
++                     if (task->type == kAudioTaskTypeEncodeToSendQueue) {
++                         {
++                             std::lock_guard<std::mutex> lock2(audio_queue_mutex_);
+++                            if (audio_send_queue_.size() >= MAX_SEND_PACKETS_IN_QUEUE) {
+++                                // Keep recent speech when the WebSocket sends
+++                                // more slowly than the microphone produces it.
+++                                audio_send_queue_.pop_front();
+++                                if (++stale_send_packets == 1 || stale_send_packets % 50 == 0) {
+++                                    ESP_LOGW(TAG, "Dropped %u stale microphone packets", stale_send_packets);
+++                                }
+++                            }
++                             audio_send_queue_.push_back(std::move(packet));
++                         }
++                         if (callbacks_.on_send_queue_available) {
++@@ -487,6 +496,12 @@ void AudioService::PushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t
++     task->pcm = std::move(pcm);
++     /* Push the task to the encode queue */
++     std::unique_lock<std::mutex> lock(audio_queue_mutex_);
+++    if (type == kAudioTaskTypeEncodeToSendQueue &&
+++        audio_encode_queue_.size() >= MAX_ENCODE_TASKS_IN_QUEUE) {
+++        // Waiting here blocks the AFE fetch task. Once its feed ring fills,
+++        // subsequent speech is lost even if the network later catches up.
+++        audio_encode_queue_.pop_front();
+++    }
++ 
++     /* If the task is to send queue, we need to set the timestamp */
++     if (type == kAudioTaskTypeEncodeToSendQueue && !timestamp_queue_.empty()) {
++@@ -498,7 +513,9 @@ void AudioService::PushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t
++         timestamp_queue_.pop_front();
++     }
++ 
++-    audio_queue_cv_.wait(lock, [this]() { return audio_encode_queue_.size() < MAX_ENCODE_TASKS_IN_QUEUE; });
+++    if (type != kAudioTaskTypeEncodeToSendQueue) {
+++        audio_queue_cv_.wait(lock, [this]() { return audio_encode_queue_.size() < MAX_ENCODE_TASKS_IN_QUEUE; });
+++    }
++     audio_encode_queue_.push_back(std::move(task));
++     audio_queue_cv_.notify_all();
++ }
++@@ -517,6 +534,23 @@ bool AudioService::PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> pa
 +     return true;
 + }
 + 
@@ -5644,10 +6354,32 @@ index a580fbc..2c2e0ba 100644
 +-#endif
 +\ No newline at end of file
 ++#endif
++diff --git a/main/audio/processors/afe_audio_processor.cc b/main/audio/processors/afe_audio_processor.cc
++index 15e9cc5..178f0a2 100644
++--- a/main/audio/processors/afe_audio_processor.cc
+++++ b/main/audio/processors/afe_audio_processor.cc
++@@ -135,6 +135,7 @@ void AfeAudioProcessor::OnVadStateChange(std::function<void(bool speaking)> call
++ void AfeAudioProcessor::AudioProcessorTask() {
++     auto fetch_size = afe_iface_->get_fetch_chunksize(afe_data_);
++     auto feed_size = afe_iface_->get_feed_chunksize(afe_data_);
+++    unsigned int fetched = 0;
++     ESP_LOGI(TAG, "Audio communication task started, feed size: %d fetch size: %d",
++         feed_size, fetch_size);
++ 
++@@ -151,6 +152,9 @@ void AfeAudioProcessor::AudioProcessorTask() {
++             }
++             continue;
++         }
+++        if (++fetched == 1 || fetched % 100 == 0) {
+++            ESP_LOGI(TAG, "AFE fetched %u frames", fetched);
+++        }
++ 
++         // VAD state change
++         if (vad_state_change_callback_) {
  diff --git a/main/boards/common/i2c_device.cc b/main/boards/common/i2c_device.cc
  index 835997d..ea50d51 100644
  --- a/main/boards/common/i2c_device.cc
-@@ -271,3 +534,79 @@ index 7bc917b..874b137 100644
+@@ -271,3 +645,90 @@ index 7bc917b..874b137 100644
   };
   
   #endif // I2C_DEVICE_H
@@ -5707,7 +6439,7 @@ index a580fbc..2c2e0ba 100644
 +     auto network = Board::GetInstance().GetNetwork();
 +     mqtt_ = network->CreateMqtt(0);
 +diff --git a/main/protocols/websocket_protocol.cc b/main/protocols/websocket_protocol.cc
-+index f0cc034..299221e 100644
++index f0cc034..189993f 100644
 +--- a/main/protocols/websocket_protocol.cc
 ++++ b/main/protocols/websocket_protocol.cc
 +@@ -1,4 +1,5 @@
@@ -5727,6 +6459,17 @@ index a580fbc..2c2e0ba 100644
 +     std::string token = settings.GetString("token");
 +     int version = settings.GetInt("version");
 +     if (version != 0) {
++@@ -209,7 +214,9 @@ std::string WebsocketProtocol::GetHelloMessage() {
++ #if CONFIG_USE_SERVER_AEC
++     cJSON_AddBoolToObject(features, "aec", true);
++ #endif
++-    cJSON_AddBoolToObject(features, "mcp", true);
+++    // On this board, the device MCP tools/list exchange stalls TCP audio.
+++    // Voice and server-side tools remain available until it is reworked.
+++    cJSON_AddBoolToObject(features, "mcp", false);
++     cJSON_AddItemToObject(root, "features", features);
++     cJSON_AddStringToObject(root, "transport", "websocket");
++     cJSON* audio_params = cJSON_CreateObject();
 diff --git a/firmware/sdkconfig.defaults b/firmware/sdkconfig.defaults
 index 4db623a..5914a7b 100644
 --- a/firmware/sdkconfig.defaults
@@ -5754,3 +6497,216 @@ index 4db623a..5914a7b 100644
 +# the vendored M5Stack cloud default anyway in case any future code path
 +# reintroduces a reference to it. Not a real server; deliberately inert.
 +CONFIG_STACKCHAN_SERVER_URL="http://127.0.0.1:1"
+diff --git a/firmware/tests/CMakeLists.txt b/firmware/tests/CMakeLists.txt
+index df2ecb5..80acabf 100644
+--- a/firmware/tests/CMakeLists.txt
++++ b/firmware/tests/CMakeLists.txt
+@@ -16,3 +16,8 @@ target_include_directories(motion_math_test PRIVATE
+ target_compile_features(motion_math_test PRIVATE cxx_std_17)
+ 
+ add_test(NAME motion_math_test COMMAND $<TARGET_FILE:motion_math_test>)
++
++add_executable(controls_test controls_test.cpp)
++target_include_directories(controls_test PRIVATE ../main)
++target_compile_features(controls_test PRIVATE cxx_std_17)
++add_test(NAME controls_test COMMAND $<TARGET_FILE:controls_test>)
+diff --git a/firmware/tests/controls_test.cpp b/firmware/tests/controls_test.cpp
+new file mode 100644
+index 0000000..8f756a3
+--- /dev/null
++++ b/firmware/tests/controls_test.cpp
+@@ -0,0 +1,62 @@
++#include <stackchan/controls/control_state.h>
++#include <stackchan/controls/head_shortcuts.h>
++#include <stackchan/controls/behavior_state.h>
++#include <cassert>
++#include <iostream>
++using namespace stackchan::controls;
++int main() {
++    State state;
++    Values server;
++    assert(state.set(Control::Dnd, 1, "first"));
++    server.value[0] = 45;
++    state.merge(server, "");
++    assert(state.values.get(Control::Dnd) == 1); // unrelated push cannot undo local DND
++    assert(state.values.get(Control::Volume) == 45);
++    assert(state.set(Control::Privacy, 1, "second"));
++    state.merge(server, "first"); // old ACK cannot consume a newer toggle
++    assert(state.dirty == 12);
++    assert(state.values.get(Control::Privacy) == 1);
++    server.value[2] = server.value[3] = 1;
++    state.merge(server, "second");
++    assert(state.dirty == 0);
++    server.value[3] = 0;
++    state.merge(server, ""); // later deliberate panel change wins after ACK
++    assert(state.values.get(Control::Dnd) == 0);
++    assert(!state.set(Control::Brightness, 0, "bad"));
++    assert(!state.set(Control::Volume, 101, "bad"));
++    assert(!state.set(Control::Privacy, 2, "bad"));
++    assert(!state.set(Control::Activity, 3, "bad"));
++
++    HeadShortcuts tap;
++    assert(tap.update(true, false, 100) == Shortcut::None);
++    assert(tap.update(false, false, 200) == Shortcut::None);
++    assert(tap.update(false, false, 551) == Shortcut::Tap);
++    assert(tap.update(false, false, 900) == Shortcut::None);
++    HeadShortcuts twice;
++    twice.update(true, false, 100); twice.update(false, false, 150);
++    twice.update(true, false, 250);
++    assert(twice.update(false, false, 300) == Shortcut::DoubleTap);
++    assert(twice.update(false, false, 900) == Shortcut::None);
++    HeadShortcuts hold;
++    hold.update(true, false, 100);
++    assert(hold.update(true, false, 1299) == Shortcut::None);
++    assert(hold.update(true, false, 1300) == Shortcut::Hold);
++    assert(hold.update(true, false, 3000) == Shortcut::None);
++    assert(hold.update(false, false, 3100) == Shortcut::None);
++    assert(hold.update(false, false, 4000) == Shortcut::None);
++    HeadShortcuts pet;
++    pet.update(true, false, 100); pet.update(true, true, 200);
++    assert(pet.update(true, false, 2000) == Shortcut::None);
++    assert(pet.update(false, false, 2100) == Shortcut::None);
++    assert(pet.update(false, false, 3000) == Shortcut::None);
++    HeadShortcuts wrap;
++    wrap.update(true, false, UINT32_MAX - 100);
++    assert(wrap.update(true, false, 1100) == Shortcut::Hold);
++
++    assert(resolveMode(true, true, true, true, false, Mode::Speaking) == Mode::Privacy);
++    assert(resolveMode(false, true, false, false, false, Mode::Idle) == Mode::Standby);
++    assert(resolveMode(false, false, true, true, true, Mode::Idle) == Mode::Dnd);
++    assert(resolveMode(false, false, false, false, false, Mode::Speaking) == Mode::Speaking);
++    assert(resolveMode(false, false, false, false, false, Mode::Idle) == Mode::Offline);
++    std::cout << "Control ownership, gestures, wraparound and behaviour priorities passed\n";
++}
+diff --git a/firmware/main/stackchan/motion/servo.cpp b/firmware/main/stackchan/motion/servo.cpp
+index cfbefe0..1f6fd99 100644
+--- a/firmware/main/stackchan/motion/servo.cpp
++++ b/firmware/main/stackchan/motion/servo.cpp
+@@ -112,6 +112,11 @@ void Servo::update_angle_anim_target(int angle)
+     if (_auto_angle_sync_enabled) {
+         _angle_anim.teleport(getCurrentAngle());  // Use current angle as start
+     }
++    // Resting servos have their torque released in update(). Re-enable it
++    // before a new target is sent; writing a position does not do that.
++    if (angle != static_cast<int>(_angle_anim.directValue())) {
++        setTorqueEnabled(true);
++    }
+     _angle_anim             = angle;  // Apply new target
+     _snap_to_target_on_rest = true;
+ }
+diff --git a/firmware/main/hal/drivers/FTServo_Arduino/src/SCSerial.cpp b/firmware/main/hal/drivers/FTServo_Arduino/src/SCSerial.cpp
+index 32f0387..4703738 100644
+--- a/firmware/main/hal/drivers/FTServo_Arduino/src/SCSerial.cpp
++++ b/firmware/main/hal/drivers/FTServo_Arduino/src/SCSerial.cpp
+@@ -8,6 +8,7 @@
+ #include "SCSerial.h"
+ 
+ #include "esp_log.h"
++#include "esp_rom_sys.h"
+ #include "esp_timer.h"
+ 
+ static const char *TAG = "FT_SCSerial";
+@@ -79,37 +80,34 @@ void SCSerial::end()
+ 
+ int SCSerial::readSCS(unsigned char *nDat, int nLen, unsigned long TimeOut)
+ {
+-	if (uart_num >= UART_NUM_MAX) {
++	if (uart_num >= UART_NUM_MAX || nLen <= 0) {
+ 		return 0;
+ 	}
+ 
+ 	int size = 0;
+ 	int64_t t_begin = esp_timer_get_time() / 1000;
+ 
+-	while (1) {
++	while (size < nLen) {
+ 		size_t available = 0;
+ 		uart_get_buffered_data_len(uart_num, &available);
+ 
+ 		if (available > 0) {
+-			unsigned char byte;
+-			int len = uart_read_bytes(uart_num, &byte, 1, 0);
++			int requested = available < static_cast<size_t>(nLen - size) ? available : nLen - size;
++			unsigned char discard[16];
++			int len = uart_read_bytes(uart_num, nDat ? nDat + size : discard,
++			                          nDat ? requested : (requested < 16 ? requested : 16), 0);
+ 			if (len > 0) {
+-				if (nDat) {
+-					nDat[size] = byte;
+-				}
+-				size++;
++				size += len;
+ 			}
+-		}
+-
+-		if (size >= nLen) {
+-			break;
++		} else {
++			// A 1 ms FreeRTOS delay is a 10 ms tick on this build, the same
++			// length as the servo reply timeout. Poll briefly instead.
++			esp_rom_delay_us(100);
+ 		}
+ 
+ 		if ((esp_timer_get_time() / 1000) - t_begin > static_cast<int64_t>(TimeOut)) {
+ 			break;
+ 		}
+-
+-		vTaskDelay(pdMS_TO_TICKS(1));
+ 	}
+ 
+ 	return size;
+@@ -117,38 +115,33 @@ int SCSerial::readSCS(unsigned char *nDat, int nLen, unsigned long TimeOut)
+ 
+ int SCSerial::readSCS(unsigned char *nDat, int nLen)
+ {
+-	if (uart_num >= UART_NUM_MAX) {
++	if (uart_num >= UART_NUM_MAX || nLen <= 0) {
+ 		return 0;
+ 	}
+ 
+ 	int size = 0;
+ 	int64_t t_begin = esp_timer_get_time() / 1000;
+ 
+-	while (1) {
++	while (size < nLen) {
+ 		size_t available = 0;
+ 		uart_get_buffered_data_len(uart_num, &available);
+ 
+ 		if (available > 0) {
+-			unsigned char byte;
+-			int len = uart_read_bytes(uart_num, &byte, 1, 0);
++			int requested = available < static_cast<size_t>(nLen - size) ? available : nLen - size;
++			unsigned char discard[16];
++			int len = uart_read_bytes(uart_num, nDat ? nDat + size : discard,
++			                          nDat ? requested : (requested < 16 ? requested : 16), 0);
+ 			if (len > 0) {
+-				if (nDat) {
+-					nDat[size] = byte;
+-				}
+-				size++;
++				size += len;
+ 				t_begin = esp_timer_get_time() / 1000;
+ 			}
+-		}
+-
+-		if (size >= nLen) {
+-			break;
++		} else {
++			esp_rom_delay_us(100);
+ 		}
+ 
+ 		if ((esp_timer_get_time() / 1000) - t_begin > static_cast<int64_t>(IOTimeOut)) {
+ 			break;
+ 		}
+-
+-		vTaskDelay(pdMS_TO_TICKS(1));
+ 	}
+ 
+ 	return size;
+@@ -188,4 +181,4 @@ void SCSerial::wFlushSCS()
+ 	}
+ 
+ 	uart_wait_tx_done(uart_num, pdMS_TO_TICKS(100));
+-}
+\ No newline at end of file
++}

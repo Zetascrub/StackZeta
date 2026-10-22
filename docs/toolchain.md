@@ -73,6 +73,33 @@ cloned, no edits) to confirm the whole toolchain works end to end, before making
 changes. A full flash backup already exists in [`backups/`](../backups/README.md) as a fallback if
 anything goes wrong.
 
+## USB diagnostic logs
+
+On Linux, capture the native USB console with Python 3 (no extra packages):
+
+```bash
+python3 firmware/monitor.py --seconds 60
+# Optional private capture; logs can contain conversation text and LAN details.
+(umask 077; python3 firmware/monitor.py --seconds 180 > /tmp/stackzeta-serial.log)
+```
+
+Use `--port` if the device is not `/dev/ttyACM0`. Close other serial monitors first.
+The reader does not explicitly toggle DTR/RTS, does not flush pending input, and
+disables hang-up-on-close. It does not flash firmware or send serial commands.
+Some serial tools reset the ESP32 when opening the port; distinguish a USB reset
+(`USB_UART_CHIP_RESET`) from an application reboot (`RTC_SW_CPU_RST`) in the log.
+
+During the 2026-09-25 hardware check, application logs and ongoing heap reports
+were visible over USB. A boot reporting `USB_UART_CHIP_RESET` successfully detected
+8 MB of PSRAM and connected to Wi-Fi and the notification bridge. Swiping up from
+the bottom of the assistant screen and tapping Home then produced a logged warm
+reboot request, `RTC_SW_CPU_RST`, successful PSRAM initialization, and the launcher;
+the launcher was also confirmed on the device. No firmware was flashed for this
+check. The firmware reports `0.4.0`; the v0.4.1 repository still sets that value in
+`CMakeLists.txt`, so the version string alone cannot identify the exact installed
+revision. The older boot-loop report remains unresolved: this check does not
+validate OTA, post-flash resets, or repeated resets under other power conditions.
+
 ## `sdkconfig` drift
 
 `sdkconfig.defaults` only seeds keys that are **missing** from `firmware/sdkconfig`; it never
@@ -91,4 +118,3 @@ and audit the built binary itself for hosts, which is the ground truth for what 
 ```bash
 strings -n 6 upstream/StackChan/firmware/build/stack-chan.bin | grep -oE "(https?|wss?|mqtts?)://[^ \"]+" | sort -u
 ```
-

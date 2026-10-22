@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.4.1-00B8D4">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.5.0-00B8D4">
   <img alt="Hardware" src="https://img.shields.io/badge/hardware-M5Stack%20CoreS3-03131D">
   <img alt="Home Assistant" src="https://img.shields.io/badge/Home%20Assistant-MCP%20%2B%20MQTT-18BCF2">
   <img alt="Privacy" src="https://img.shields.io/badge/privacy-local%20first-FFAA24">
@@ -43,6 +43,21 @@ someone else's cloud. Only the words go out to the AI, and a **privacy mode** sh
 | 🎛️ **Be tuned from a browser** | A signed-in control panel on your LAN for personality, volume, brightness, standby, LED colours, notification rules, and API keys. |
 | 😴 **Rest when you do** | Quiet, balanced or lively idle personalities; it dozes off, parks its head and switches the screen off when left alone. |
 | 🔒 **Stop listening, properly** | Privacy mode, enforced on the robot *and* on the server. More below. |
+
+## On-device controls (v0.5)
+
+While the assistant is running, **swipe down from the top edge** or tap **Controls**.
+Adjust volume, screen brightness, privacy, Do Not Disturb and the Quiet/Balanced/Lively
+activity profile. The panel shows whether changes are synced or saved locally while offline.
+
+- **Tap the head:** stop speech.
+- **Double-tap the head:** dismiss and acknowledge the last notification.
+- **Hold the head for 1.2 seconds:** toggle privacy, with a red ring and visible status.
+- **Stroke the head:** keep the petting reaction.
+
+Local settings survive a restart and sync with the browser panel when the bridge reconnects.
+Privacy, DND and quiet activity suppress ambient conversational head movement; speech keeps
+its audio-driven mouth animation. The on-device status and LEDs follow the same state policy.
 
 ## Private by design
 
@@ -120,23 +135,23 @@ network, Home Assistant with an MQTT broker, and an OpenAI API key.
    [`backend/README.md`](backend/README.md#triggering-notifications-from-home-assistant)).
 
 > [!NOTE]
-> On the CoreS3 used for development, any reset other than a full power-off leaves the robot in a
-> boot loop, including the reset after flashing. Hold the side button for about 6 seconds to power
-> off, then press it to start again. Details and other known issues:
+> A PSRAM boot loop has been observed after resets on the development CoreS3, though USB and
+> software resets succeeded in the latest hardware check. OTA and post-flash resets still need
+> verification. If it loops, hold the side button for about 6 seconds to power off, then press it
+> to start again. Details and other known issues:
 > [`backend/README.md`](backend/README.md#known-issues-v04).
 
 ## What's next
 
-The v0.5 plan:
+After v0.5:
 
-- 🔌 **Fix the warm-reset boot loop**, so over-the-air updates are safe.
-- 🖥️ **Device logs over USB**, for proper on-device debugging.
+- 🔌 **Resolve the reported reset boot loop and validate OTA**, building on successful USB and software reset checks.
+- 🖥️ **Repeatable hardware diagnostics**, using the [USB log reader](docs/toolchain.md#usb-diagnostic-logs) to investigate device issues.
 - 🧠 **A fully local brain:** a local LLM through Ollama, taking OpenAI out of the picture entirely.
 - 🔐 **A device credential** for the notification socket.
 - 🇬🇧 **English all the way down:** translating the remaining Chinese strings the robot can show,
   say, log or send to the AI.
-- ✨ **Smaller touches:** Do Not Disturb that stays in sync, a head-touch privacy toggle, and viewing
-  and deleting Zeta's memories from the control panel.
+- 🧠 **Memory controls:** view and delete Zeta's memories from the control panel.
 
 ## Project layout
 

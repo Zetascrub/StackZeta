@@ -51,3 +51,48 @@ Server integration.
 The community project [BrettKinny/dotty-stackchan](https://github.com/BrettKinny/dotty-stackchan)
 (same upstream, self-hosted voice backend) was useful reference material during planning — see
 [`docs/references.md`](references.md) — but wasn't cloned or built on directly.
+
+## v0.5 interaction and settings update
+
+- `main/apps/common/quick_controls/`: a native 320×240 LVGL sheet, opened by a top-edge
+  swipe or the Controls button. It has sliders, privacy/DND toggles, activity presets,
+  connection/sync feedback, and a persistent assistant status strip.
+- `main/stackchan/controls/`: shared behaviour priorities, pending-setting ownership, and
+  independently testable tap/double-tap/hold recognition. Swipes cancel shortcuts and keep
+  the existing petting reaction. Volume/brightness commit on slider release.
+- `main/hal/hal_head_touch.cpp`: emits the new gestures while retaining raw press/release/swipe
+  events. Hold toggles privacy once per touch; double-tap does not also emit a single tap.
+- `main/stackchan/notify/`: persists local controls and pending changes; coalesces/retries
+  updates until the bridge acknowledges the current ID. Local inputs and LED feedback stay
+  available independently of the notification socket. Notification audio is written in short
+  chunks so a tap can stop playback. DND also suppresses already queued alerts.
+- `main/hal/board/stackchan_display.cc`: applies coordinated expressions and motion policy;
+  quiet/DND/privacy/controls suppress conversational head motion without losing speech lip-sync.
+  RGB writes in `SetStatus` were removed so the shared policy owns the ring.
+- `patches/xiaozhi-esp32.patch`: queued privacy actions consult the latest desired state,
+  preventing an older queued toggle from temporarily reversing a newer one.
+- Backend `device_controls.py` and `/ws`: validate device patches, persist bounded retry
+  receipts with configuration, and echo acknowledgements. The panel submits changed fields
+  and refreshes when the user has no unsaved edits.
+
+Host checks: `cmake -S upstream/StackChan/firmware/tests -B /tmp/stackzeta-tests`,
+`cmake --build /tmp/stackzeta-tests`, then `ctest --test-dir /tmp/stackzeta-tests`.
+Backend checks: `python3 -m unittest discover -s backend/notify-bridge/tests -v` with the
+notify-bridge requirements installed. Protocol tests use temporary state and an in-process
+HTTP/WebSocket server, not the live robot or MQTT broker.
+
+## Voice recovery (15 October 2026)
+
+The device now advertises `features.mcp: false` on its Xiaozhi voice connection.
+With device MCP enabled, the server received the wake/listen message and the
+first audio packets, but the device's TCP send stopped after its tool-list
+exchange. The server acknowledged the packets and had receive space; smaller
+tool-list pages did not prevent the stall. Disabling device MCP restored a
+complete wake → ASR → LLM → TTS → audible reply → idle cycle in a physical test.
+
+The firmware also bounds each microphone send pass and drops old queued audio
+when the network falls behind, so the audio processing task can keep fetching
+microphone frames. Device-local MCP tools (`self.robot.*` and similar) are
+unavailable to the voice server while this guard is in place. Server-side Home
+Assistant tools remain configured. Restore device MCP only after a separate
+load test shows its tool-list exchange and microphone stream can coexist.

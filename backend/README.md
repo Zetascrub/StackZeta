@@ -48,8 +48,8 @@ import if it is not `weather.home`.
 Notification payloads may include `category` (`general`, `security`, `doorbell`, `reminder`, or
 `household`). Category defaults decide color, speech, and urgency unless the payload explicitly
 provides boolean `speak` or `urgent` values. Quiet hours mute routine speech; urgent alerts still
-sound. DND records history but suppresses delivery. On the robot, swipe forward across the head
-touch strip to acknowledge the last notification or backward to repeat it.
+sound. DND records history but suppresses delivery. On v0.5 firmware, double-tap the head
+touch strip to dismiss and acknowledge the last notification. Strokes are reserved for petting.
 
 ### Sign-in and keys
 
@@ -249,14 +249,23 @@ first attempt, with hysteresis (re-arms only below 120) to avoid chattering righ
 
 ## Do Not Disturb
 
-`self.notifications.set_do_not_disturb` / `get_do_not_disturb` — new MCP tools
-(`firmware/main/hal/hal_mcp.cpp`) so a spoken command ("turn on do not disturb") can toggle
-whether incoming HA-triggered notifications get shown/spoken at all. While enabled, notifications
-are silently dropped (logged, not queued for later) rather than held back and shown once free —
-deliberately not persisted across reboots, since a DND that's stuck on and survives a power cycle
-silently seemed like a worse footgun than just having to say it again. State lives in
-`NotifyClient` (`firmware/main/stackchan/notify/notify_client.cpp`), a plain atomic flag checked in
-`drainIncoming()` before a notification is even queued.
+`self.notifications.set_do_not_disturb` / `get_do_not_disturb` let a spoken command
+("turn on do not disturb") toggle notification delivery. The on-device quick controls and
+browser panel share the same setting. DND suppresses delivery, including queued notifications;
+it does not mute conversations or enable privacy mode.
+
+As of v0.5, DND is persisted and visibly indicated on the robot. Device-originated changes to
+DND, privacy, volume, brightness and activity are saved locally and sent as small
+`settings_update` patches. The bridge validates a restricted set of fields, persists the patch
+and its receipt together, and replies with `accepted_update` plus the current settings snapshot.
+The robot keeps pending fields across reconnects/reboots and ignores conflicting snapshots
+until its latest update is acknowledged. Recent receipt IDs prevent a retried update from
+undoing a later panel edit. Pending offline device edits take precedence when reconnecting.
+
+The panel sends only edited fields and refreshes idle forms every three seconds, so an unrelated
+volume save does not overwrite DND changed by voice. Unsaved form edits suspend refresh.
+Deploy the updated notify bridge alongside v0.5 firmware; older bridges cannot acknowledge
+local edits, which remain visibly pending on the robot.
 
 ## Removing Chinese output (backend)
 
@@ -385,17 +394,22 @@ wedging the device. This still needs a live slow-response/failure-path test on h
 
 ## Known issues (v0.4)
 
-- **Warm reset boot-loops the CoreS3** (`PSRAM chip is not connected`), on v0.3 firmware too, so
-  not caused by v0.4. Any reset other than a full power-off (after flashing, and presumably after
-  an OTA update) needs a power cycle: hold the side button ~6 s, then press. Flash with
+- **Intermittent/unresolved warm-reset boot loop** (`PSRAM chip is not connected`), previously
+  observed on v0.3 and v0.4. On 2026-09-25, both a USB-triggered reset and a Home-button software
+  reboot succeeded with 8 MB PSRAM detected; the previously reported universal failure did not
+  reproduce. OTA and post-flash resets remain unverified. If it loops, power-cycle by holding
+  the side button ~6 s, then pressing it. Flash with
   `esptool ... --after no_reset write_flash @flash_args` from `firmware/build` and power-cycle.
 - **Speaker crackle** was heard once on v0.4 after a privacy toggle and could not be reproduced
   afterwards (bisected across LEDs, activity profile, standby and privacy-on boot; v0.3 was clean).
 - **Device event reporting** (`NotifyClient::ReportEvent` → `device_event` on the notify socket)
   is compiled in and verified present in the binary, but no event frame ever leaves the device —
   unexplained. The device's `listen stop` on privacy-on is similarly unexplained.
-- **App logs are not visible over USB** after boot (likely the USB host component taking the port).
-- **DND set by voice is overwritten** by the next settings push from the control panel.
+- **USB logging previously appeared unavailable**, but boot, application, and runtime heap logs
+  were captured successfully on 2026-09-25. The suspected USB-host conflict is unconfirmed.
+  See the [USB diagnostic capture instructions](../docs/toolchain.md#usb-diagnostic-logs).
+- **DND/settings sync:** addressed in v0.5 with persisted, acknowledged device patches and
+  field-level panel saves; see [Do Not Disturb](#do-not-disturb).
 - The device's notify socket (`/ws`) is **unauthenticated**, so any LAN client can connect, receive
   the settings pushed to the device (including the home location) and displace the real device.
   Needs a device credential in firmware.
